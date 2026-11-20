@@ -5,7 +5,14 @@ const fixture = t => deskProviderFixture(t, command);
 test('HTTP snapshot and edit use revisions; applied task survives process restart',async t=>{const f=await fixture(t);assert.equal((await f.snapshot())[0].revision,1);const value=await (await f.put('one')).json();assert.equal(value.revision,2);const epoch=f.server.epoch;await f.restart();assert.equal(f.server.epoch,epoch);assert.deepEqual(await (await f.get('one')).json(),value);assert.equal((await f.snapshot())[0].title,'Edited task');});
 test('replay after a later edit returns historical confirmation without restoring old data',async t=>{const f=await fixture(t),one=await (await f.put('one')).json();await f.put('two',command(2,'Later task'));assert.deepEqual(await (await f.put('one')).json(),one);assert.equal((await f.snapshot())[0].revision,3);assert.equal((await f.snapshot())[0].title,'Later task');});
 test('two competing writes from the same revision produce applied plus retained conflict',async t=>{const f=await fixture(t),results=await Promise.all(['one','two'].map(key=>f.put(key).then(r=>r.json())));assert.deepEqual(results.map(v=>v.status).sort(),['applied','conflict']);assert.equal((await f.snapshot())[0].revision,2);const loser=results.find(v=>v.status==='conflict');assert.deepEqual(await (await f.get(loser.key)).json(),loser);});
-test('eight duplicate HTTP writes advance the task only once',async t=>{const f=await fixture(t),values=await Promise.all(Array.from({length:8},()=>f.put('one').then(r=>r.json())));assert.ok(values.every(v=>v.status==='applied'&&v.revision===2));assert.equal((await f.snapshot())[0].revision,2);});
+test('eight duplicate HTTP writes advance the task only once',async t=>{
+  const f=await fixture(t);
+  const responses=await Promise.all(Array.from({length:8},()=>f.put('one')));
+  const values=await Promise.all(responses.map(async response=>({code:response.status,...await response.json()})));
+  assert.deepEqual(values.map(({code,status,revision,error})=>({code,status,revision,error})),
+    Array.from({length:8},()=>({code:200,status:'applied',revision:2,error:undefined})));
+  assert.equal((await f.snapshot())[0].revision,2);
+});
 test('lost acknowledgement is recovered after restart; before-commit loss is absent',async t=>{const f=await fixture(t);await assert.rejects(f.put('one',command(),'after'));await f.restart();assert.equal((await (await f.get('one')).json()).status,'applied');await assert.rejects(f.put('two',command(2),'before'));assert.equal((await (await f.get('two')).json()).status,'absent');assert.equal((await f.snapshot())[0].revision,2);});
 test('the unavailable receipt fixture distinguishes a retained command from an absent one', async t => {
   const f = await fixture(t);

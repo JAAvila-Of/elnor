@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from threading import Lock
 import time
 import uuid
 
@@ -121,6 +122,7 @@ class Ledger:
     def __init__(self, filename, *, clock=time.time_ns):
         self.filename = filename
         self.clock = clock
+        self.command_writes = Lock()
         with closing(self.connect()) as db:
             db.executescript('''
 CREATE TABLE IF NOT EXISTS metadata(name TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -243,7 +245,8 @@ CREATE TABLE IF NOT EXISTS results(scope TEXT NOT NULL,key TEXT NOT NULL,intent 
         command = json.loads(serialized)
         task_id = command['task']['id'] if kind == 'create' else command['taskId']
         result = dict(scope=scope, epoch=self.epoch, key=key, intent=command)
-        with closing(self.connect()) as db:
+        # SQLite permits one writer. Queue commands before competing for its lock.
+        with self.command_writes, closing(self.connect()) as db:
             try:
                 db.execute('BEGIN IMMEDIATE')
                 prior = db.execute('SELECT intent,result FROM results WHERE scope=? AND key=?', (scope, key)).fetchone()

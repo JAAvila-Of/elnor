@@ -10,12 +10,12 @@ import {setupDOM,FakeNode,tick} from './fake-dom.mjs';
 import {formatAuthoringDiagnostics} from '../scripts/authoring-diagnostics.mjs';
 
 function fixture(t){
-  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-authoring-'));
+  const temporary=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-authoring-'));
   const workspace=path.join(temporary,'workspace with spaces');
   const session=createAuthoringSession(workspace);
   t.after(()=>{
     const resolved=path.resolve(temporary);
-    assert.ok(resolved.startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(resolved).startsWith('elnor-authoring-'));
+    assert.ok(resolved.startsWith(path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep)&&path.basename(resolved).startsWith('elnor-authoring-'));
     fs.rmSync(resolved,{recursive:true,force:true});
   });
   const read=name=>fs.readFileSync(path.join(workspace,name),'utf8');

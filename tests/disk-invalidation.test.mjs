@@ -10,12 +10,12 @@ import {createAsyncLanguageService} from '../src/async-language-service.mjs';
 const model='export interface Model { label: string; }';
 const source='import type {Model} from "./Model.mjs"; component Typed(model: Model) { ui { span model.label.toUpperCase() } }';
 function fixture(t){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-disk-'));
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-disk-'));
   const file=path.join(root,'Typed.eln'),dependency=path.join(root,'Model.mts');
   fs.writeFileSync(file,source);fs.writeFileSync(dependency,model);
   t.after(()=>{
     const resolved=path.resolve(root);
-    assert.ok(resolved.startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(resolved).startsWith('elnor-disk-'));
+    assert.ok(resolved.startsWith(path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep)&&path.basename(resolved).startsWith('elnor-disk-'));
     fs.rmSync(resolved,{recursive:true,force:true});
   });
   return {root,file,dependency};

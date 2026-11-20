@@ -16,12 +16,12 @@ export async function startDeskProvider(database, seed = false) {
 }
 
 export async function deskProviderFixture(t, command) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'elnor-task-provider-'));
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'elnor-task-provider-'));
   const database = path.join(dir, 'ledger.sqlite');
   let server;
   t.after(async () => {
     await server?.stop();
-    assert.equal(path.dirname(dir), os.tmpdir());
+    assert.equal(path.dirname(dir), fs.realpathSync.native(os.tmpdir()));
     assert.ok(path.basename(dir).startsWith('elnor-task-provider-'));
     fs.rmSync(dir, {recursive: true, force: true});
   });

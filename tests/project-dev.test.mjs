@@ -9,11 +9,11 @@ import {createProjectDev} from '../src/project-dev.mjs';
 import {buildSurfaceProject} from '../src/project-build.mjs';
 
 function fixture(t){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-project-dev-')),project=path.join(root,'source & spaces');fs.mkdirSync(project);
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-project-dev-')),project=path.join(root,'source & spaces');fs.mkdirSync(project);
   const links=[];
   t.after(()=>{
     for(const link of links)if(fs.lstatSync(link,{throwIfNoEntry:false}))fs.unlinkSync(link);
-    assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('elnor-project-dev-'));
+    assert.ok(path.resolve(root).startsWith(path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep)&&path.basename(root).startsWith('elnor-project-dev-'));
     fs.rmSync(root,{recursive:true,force:true});
   });
   const entry=path.join(project,'App.eln');fs.writeFileSync(entry,'component App() { ui { h1 "first" } }');
@@ -183,7 +183,10 @@ test('an explicit broader watch directory detects imports beside the entry direc
   const relocated=path.join(nested,'App.eln');fs.renameSync(f.entry,relocated);f.entry=relocated;
   fs.writeFileSync(f.entry,'import {label} from "../shared.mjs";\ncomponent App() { ui { h1 label } }');
   f.write('shared.mts','export const label="one";');
-  const dev=session(t,f,{watchDir:f.project}),first=manifest(f);
+  const watchDir=process.platform==='win32'
+    ? path.join(os.tmpdir(),path.relative(fs.realpathSync.native(os.tmpdir()),f.project))
+    : f.project;
+  const dev=session(t,f,{watchDir}),first=manifest(f);
   f.write('shared.mts','export const label="two";');assert.equal(settle(dev),true);assert.notEqual(manifest(f),first);
 });
 

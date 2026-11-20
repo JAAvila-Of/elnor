@@ -9,11 +9,11 @@ import {checkSurfaceProject,readSurfaceGraph} from '../src/project-check.mjs';
 
 const script=fileURLToPath(new URL('../scripts/check-project.mjs',import.meta.url));
 function fixture(t){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-project-check-')),workspace=path.join(root,'my project');fs.mkdirSync(workspace);
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-project-check-')),workspace=path.join(root,'my project');fs.mkdirSync(workspace);
   const links=[];
   t.after(()=>{
     for(const link of links)fs.unlinkSync(link);
-    assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('elnor-project-check-'));
+    assert.ok(path.resolve(root).startsWith(path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep)&&path.basename(root).startsWith('elnor-project-check-'));
     fs.rmSync(root,{recursive:true,force:true});
   });
   const write=(name,source)=>{const file=path.join(workspace,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,source);return file;};

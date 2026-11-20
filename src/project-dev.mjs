@@ -31,12 +31,17 @@ export function createProjectDev({entry,outputDir,checkOutputDir,watchDir,props=
   if(!Number.isInteger(intervalMs)||intervalMs<25)fail('Polling interval must be an integer of at least 25 ms');
   entry=sourcePath(entry);outputDir=path.resolve(outputDir);checkOutputDir=path.resolve(checkOutputDir);
   watchDir=path.resolve(watchDir??path.dirname(entry));
-  if(!fs.statSync(watchDir).isDirectory()||!within(watchDir,entry))fail('The watch directory must contain the entry');
-  if(within(outputDir,watchDir)||within(checkOutputDir,watchDir))fail('Generated directories must not contain the watch directory');
+  if(!fs.statSync(watchDir).isDirectory())fail('The watch directory must contain the entry');
   for(let current=watchDir;;current=path.dirname(current)){
     if(fs.lstatSync(current).isSymbolicLink())fail('Watch directory must not traverse symlinks or junctions');
     if(path.dirname(current)===current)break;
   }
+  watchDir=sourcePath(watchDir);
+  const generatedRoots=[sourcePath(outputDir),sourcePath(checkOutputDir)];
+  if(!within(watchDir,entry))fail('The watch directory must contain the entry');
+  if(generatedRoots.some(root=>within(root,watchDir)))fail('Generated directories must not contain the watch directory');
+  const generatedPaths=[outputDir,checkOutputDir,...generatedRoots];
+  const isGenerated=file=>generatedPaths.some(root=>within(root,file));
   let validateProps;
   const previewInputs=createPreviewInputs({props,propsFile,cssFile,validateProps(serialized,file){
     if(!validateProps)throw Error('No checked entry contract in this session. Wait for a successful source build, then reload.');
@@ -59,7 +64,7 @@ export function createProjectDev({entry,outputDir,checkOutputDir,watchDir,props=
   }
   function onDependency(input){
     const file=path.resolve(input.file),kind=input.kind;
-    if(within(outputDir,file)||within(checkOutputDir,file)||file.split(path.sep).some(part=>['node_modules','.git'].includes(part.toLowerCase())))return;
+    if(isGenerated(file)||file.split(path.sep).some(part=>['node_modules','.git'].includes(part.toLowerCase())))return;
     if(kind==='file'&&!(/\.(?:eln|[cm]?ts|[cm]?js)$/i.test(file)||path.basename(file)==='package.json'))return;
     const key=kind+':'+logicalKey(file);
     if(!dependencies.has(key)){
@@ -74,7 +79,7 @@ export function createProjectDev({entry,outputDir,checkOutputDir,watchDir,props=
     function visit(directory){
       for(const item of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0)){
         const file=path.join(directory,item.name);
-        if(within(outputDir,file)||within(checkOutputDir,file)||item.name==='node_modules'||item.name==='.git')continue;
+        if(isGenerated(file)||item.name==='node_modules'||item.name==='.git')continue;
         if(item.isSymbolicLink())fail('Linked paths are outside the watch contract: '+file);
         if(item.isDirectory())visit(file);
         else if(item.isFile()&&(/\.(?:eln|ts|mts|js|mjs)$/.test(item.name)||item.name==='package.json')){

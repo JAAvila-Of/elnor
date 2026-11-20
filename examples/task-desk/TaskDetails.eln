@@ -1,0 +1,121 @@
+import type { Task, TaskPriority, TaskStatus } from "./types.js";
+import { taskDraftForm } from "./task-draft-form.js";
+
+component TaskDetails(task: Task) {
+  event saved(task: Task)
+  event removed(id: string)
+  event editMode(active: boolean)
+  state editing = false;
+  state title = "";
+  state assignee = "";
+  state description = "";
+  state priority: TaskPriority = "normal";
+  state showErrors = false;
+  state confirmingDelete = false;
+  calc draft = taskDraftForm.validate(readDraft());
+  calc errors = taskDraftForm.fieldErrors(showErrors ? draft : undefined);
+
+  action readDraft() {
+    return {
+      title,
+      assignee,
+      description,
+      priority
+    };
+  }
+
+  action beginEdit() {
+    title = task.title;
+    assignee = task.assignee;
+    description = task.description;
+    priority = task.priority;
+    showErrors = false;
+    confirmingDelete = false;
+    editing = true;
+    emit.editMode(true);
+  }
+
+  action cancelEdit() {
+    editing = false;
+    showErrors = false;
+    emit.editMode(false);
+  }
+
+  action save() {
+    const input = taskDraftForm.validate(readDraft());
+    showErrors = !!input.issues;
+    if (input.issues) return;
+    const updated: Task = {
+      ...task,
+      ...input.value
+    };
+    editing = false;
+    emit.editMode(false);
+    emit.saved(updated);
+  }
+
+  action changeStatus(status: TaskStatus) {
+    emit.saved({
+      ...task,
+      status
+    });
+  }
+
+  action askDelete() {
+    confirmingDelete = true;
+  }
+
+  action keepTask() {
+    confirmingDelete = false;
+  }
+
+  action deleteTask() {
+    emit.removed(task.id);
+  }
+
+  ui {
+    article .task-details {
+      small `${task.id} · ${task.status}`
+      h2 task.title
+      if !editing {
+        p class=("task-description") (task.description || "No description yet.")
+        p `Assigned to ${task.assignee || "nobody"} · ${task.priority} priority`
+        div .actions {
+          button "Edit task" => beginEdit()
+          if task.status === "open" {
+            button "Start task" => changeStatus("in-progress")
+          }
+          if task.status !== "done" {
+            button "Complete task" => changeStatus("done")
+          }
+          if task.status !== "open" {
+            button "Reopen task" => changeStatus("open")
+          }
+          button "Delete task" => askDelete()
+        }
+      }
+      if editing {
+        form focus-invalid=(true) => save() {
+          input error=(errors.title) "Edit title" <-> title
+          input error=(errors.assignee) "Edit assignee" <-> assignee
+          textarea error=(errors.description) "Edit description" <-> description
+          select error=(errors.priority) "Edit priority" <-> priority {
+            option "Normal" => "normal"
+            option "High" => "high"
+          }
+          div .actions {
+            submit "Save changes"
+            button "Cancel edit" => cancelEdit()
+          }
+        }
+      }
+      if confirmingDelete {
+        section .confirmation {
+          p `Delete ${task.id}? This removes it from this session.`
+          button "Delete permanently" => deleteTask()
+          button "Keep task" => keepTask()
+        }
+      }
+    }
+  }
+}

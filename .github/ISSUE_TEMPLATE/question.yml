@@ -1,0 +1,16 @@
+name: Question
+description: Ask about usage, syntax, or project behavior.
+labels: [question, triage]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: Include your question, relevant version, and a small example if applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Link docs or examples you checked and share relevant public diagnostics.

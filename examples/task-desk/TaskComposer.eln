@@ -1,0 +1,52 @@
+import SubmitButton from "./SubmitButton.eln";
+import type { TaskInput } from "./types.js";
+import { taskDraftForm } from "./task-draft-form.js";
+
+component TaskComposer() {
+  event created(task: TaskInput)
+  state title = "";
+  state assignee = "";
+  state description = "";
+  state highPriority = false;
+  state showErrors = false;
+  calc draft = taskDraftForm.validate(readDraft());
+  calc errors = taskDraftForm.fieldErrors(showErrors ? draft : undefined);
+
+  action readDraft() {
+    return {
+      title,
+      assignee,
+      description,
+      priority: highPriority ? "high" : "normal"
+    };
+  }
+
+  action submit() {
+    const input = taskDraftForm.validate(readDraft());
+    showErrors = !!input.issues;
+    if (input.issues) return;
+    emit.created(input.value);
+    clear();
+  }
+
+  action clear() {
+    title = "";
+    assignee = "";
+    description = "";
+    highPriority = false;
+    showErrors = false;
+  }
+
+  ui {
+    form class=("composer") focus-invalid=(true) => submit() {
+      on reset() => clear()
+      h2 "New task"
+      input error=(errors.title) "New task title" <-> title
+      input error=(errors.assignee) "New task assignee" <-> assignee
+      textarea error=(errors.description) "New task description" <-> description
+      checkbox class=("priority-toggle") "High priority" <-> highPriority
+      SubmitButton label="Create task" disabled=(false)
+      reset "Clear draft"
+    }
+  }
+}

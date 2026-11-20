@@ -1,0 +1,20 @@
+{
+  "name": "surface-spike",
+  "displayName": "Surface — Elnor Spike",
+  "publisher": "elnor",
+  "version": "0.0.4",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "description": "Experimental original-source Surface tooling; not a production extension.",
+  "engines": {"vscode": "^1.100.0"},
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onLanguage:surface"],
+  "capabilities": {
+    "untrustedWorkspaces": {"supported": false, "description": "The experimental service reads source dependencies from disk."},
+    "virtualWorkspaces": {"supported": false}
+  },
+  "contributes": {
+    "languages": [{"id": "surface", "aliases": ["Surface", "eln"], "extensions": [".eln"]}]
+  }
+}

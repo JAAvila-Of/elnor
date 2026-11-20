@@ -1,0 +1,18 @@
+import Counter from "./Counter.eln";
+component App() {
+  state latest = 0;
+
+  action record(value: number) {
+    latest = value;
+  }
+
+  ui {
+    main {
+      h1 "Surface authoring exercise"
+      Counter label="Clicks" {
+        on changed(value) => record(value)
+      }
+      p `Last event: ${latest}`
+    }
+  }
+}

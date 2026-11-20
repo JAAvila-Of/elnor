@@ -1,0 +1,14 @@
+:root { font-family: system-ui, sans-serif; color: #203044; background: #f3f5f8; }
+body { margin: 0; }
+main { max-width: 52rem; margin: 2rem auto; padding: 1.5rem; background: white; }
+button, input, textarea, select { font: inherit; margin: .35rem; padding: .55rem; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+form { display: grid; }
+.elnor-field-error { color: #9b2430; }
+textarea { min-height: 6rem; }
+.task-list { padding: 0; list-style: none; }
+.task-row { border-bottom: 1px solid #dce2e9; padding: .5rem 0; }
+.task-row small { display: block; }
+section { border-top: 2px solid #dce2e9; margin-top: 1rem; }
+@media (max-width: 55rem) { main { margin: 0; padding: 1rem; } }

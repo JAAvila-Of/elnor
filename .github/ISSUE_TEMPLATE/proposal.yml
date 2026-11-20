@@ -1,0 +1,23 @@
+name: Feature proposal
+description: Propose a Surface, runtime, or tooling change.
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case
+      description: Describe what you are trying to do and how you do it today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Show a small before-and-after authoring example when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Alternatives and trade-offs
+      description: Include compatibility, diagnostics, or runtime implications if known.

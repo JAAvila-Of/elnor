@@ -1,0 +1,11 @@
+component Panel(title: string) {
+  ui {
+    section .panel {
+      header {
+        h2 title
+        slot actions
+      }
+      slot
+    }
+  }
+}

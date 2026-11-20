@@ -1,0 +1,41 @@
+import {createOperation, idleOperationState} from "./operation.js";
+import type {OperationState} from "./operation.js";
+
+component ManagedSearch(request: (query: string, signal: AbortSignal) => Promise<string>) {
+  event loaded(value: string)
+  state query = "";
+  state result = "";
+  state message = "";
+  state progress: OperationState = idleOperationState();
+  state operation = createOperation<string, string>({policy: "latest", publish: value => report(value), success: value => accept(value)});
+
+  on dispose() => operation.dispose()
+
+  action report(value: OperationState) {
+    progress = value;
+    message = value.status === "error" ? "Search failed" : "";
+  }
+  action accept(value: string) { result = value; emit.loaded(value); }
+  action callbackFailed(error: unknown) { message = "Could not apply search result"; }
+  action search() {
+    const text = query.trim();
+    if (!text) { operation.cancel(); message = "Enter a query"; return; }
+    void operation.run(text, request).catch(callbackFailed);
+  }
+  action clear() { operation.cancel(); query = ""; result = ""; message = ""; }
+
+  ui {
+    section {
+      form => search() {
+        on reset() => clear()
+        input "Query" <-> query
+        submit "Search"
+        button disabled=(progress.status !== "pending") "Cancel" => operation.cancel()
+        reset "Clear"
+      }
+      p result
+      small (progress.status === "pending" ? "Loading" : "Idle")
+      strong message
+    }
+  }
+}

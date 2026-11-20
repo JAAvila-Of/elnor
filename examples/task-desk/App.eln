@@ -1,0 +1,152 @@
+import type { Task, TaskInput, TaskFilter } from "./types.js";
+import { filterTasks, nextTaskNumber, taskSummary } from "./model.js";
+import WorkPanel from "./WorkPanel.eln";
+import TaskList from "./TaskList.eln";
+import TaskComposer from "./TaskComposer.eln";
+import TaskDetails from "./TaskDetails.eln";
+
+component TaskDesk(initialTasks: Task[]) {
+  state tasks: Task[] = [...initialTasks];
+  state nextNumber = nextTaskNumber(initialTasks);
+  state query = "";
+  state filter: TaskFilter = "all";
+  state selectedId: string | null = null;
+  state editorOpen = false;
+  state switching = false;
+  state pendingId: string | null = null;
+  state notice = "Ready. Changes stay in this browser session.";
+  calc visible = filterTasks(tasks, query, filter);
+  calc selection = tasks.filter(task => task.id === selectedId);
+  calc summary = taskSummary(tasks);
+
+  action choose(id: string) {
+    if (id === selectedId) return;
+    if (editorOpen) {
+      pendingId = id;
+      switching = true;
+      return;
+    }
+    selectedId = id;
+  }
+
+  action discardAndSwitch() {
+    selectedId = pendingId;
+    pendingId = null;
+    switching = false;
+    editorOpen = false;
+  }
+
+  action keepEditing() {
+    switching = false;
+    pendingId = null;
+  }
+
+  action editMode(active: boolean) {
+    editorOpen = active;
+    if (!active) {
+      switching = false;
+      pendingId = null;
+    }
+  }
+
+  action setFilter(value: TaskFilter) {
+    filter = value === filter ? "all" : value;
+  }
+
+  action clearSearch() {
+    query = "";
+    filter = "all";
+  }
+
+  action create(input: TaskInput) {
+    if (!Number.isSafeInteger(nextNumber)) {
+      notice = "No local task numbers remain. Your existing tasks are unchanged.";
+      return;
+    }
+    const task: Task = {...input, id: `TASK-${nextNumber}`, status: "open"};
+    nextNumber++;
+    tasks = [...tasks, task];
+    query = "";
+    filter = "all";
+    notice = `Created ${task.id}.`;
+    if (editorOpen) {
+      pendingId = task.id;
+      switching = true;
+    } else {
+      selectedId = task.id;
+    }
+  }
+
+  action save(updated: Task) {
+    tasks = tasks.map(task => task.id === updated.id ? updated : task);
+    notice = `Saved ${updated.id}.`;
+  }
+
+  action remove(id: string) {
+    tasks = tasks.filter(task => task.id !== id);
+    selectedId = null;
+    editorOpen = false;
+    switching = false;
+    pendingId = null;
+    notice = `Deleted ${id}.`;
+  }
+
+  ui {
+    div .task-desk {
+      header .desk-heading {
+        small "SURFACE WORKSPACE"
+        h1 "Task desk"
+        p "Tasks and issues, from first report to done."
+        strong summary
+      }
+      p notice
+      section .desk-workspace {
+        WorkPanel title="Tasks" {
+          fill actions {
+            small `${visible.length} visible · ${filter}`
+          }
+          input "Search tasks" <-> query
+          nav .filters {
+            button aria-current=(filter === "all") "All tasks" => setFilter("all")
+            button aria-pressed=(filter === "open") "Open" => setFilter("open")
+            button aria-pressed=(filter === "in-progress") "In progress" => setFilter("in-progress")
+            button aria-pressed=(filter === "done") "Completed" => setFilter("done")
+            button disabled=(query === "" && filter === "all") "Clear filters" => clearSearch()
+          }
+          TaskList tasks=visible selectedId=selectedId {
+            on selected(id) => choose(id)
+          }
+        }
+        section .detail-column {
+          if switching {
+            section .confirmation {
+              h3 "An edit session is open"
+              p "Keep editing, or discard the draft before switching tasks."
+              button "Keep editing" => keepEditing()
+              button "Discard draft and switch" => discardAndSwitch()
+            }
+          }
+          if selection.length === 0 {
+            section .empty-selection {
+              h2 "Choose a task"
+              p "Select a task to see its details, change its status or edit it."
+            }
+          }
+          each task in selection by task.id {
+            TaskDetails task=task {
+              on saved(updated) => save(updated)
+              on removed(id) => remove(id)
+              on editMode(active) => editMode(active)
+            }
+          }
+          TaskComposer {
+            on created(task) => create(task)
+          }
+        }
+      }
+      footer {
+        p "Local pilot · Reload restores the preview data."
+      }
+    }
+  }
+}

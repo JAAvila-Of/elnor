@@ -1,0 +1,7 @@
+node_modules
+dist
+.elnor
+.playwright-cli
+*.log
+.git
+.env*

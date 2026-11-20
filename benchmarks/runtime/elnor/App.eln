@@ -1,0 +1,34 @@
+import {initial,reduce} from "../model.mjs";
+import RowView from "./RowView.eln";
+component App(size: number) {
+  state model = initial();
+  action dispatch(action: string, id = 0) {
+    model = reduce(model,action,size,id);
+  }
+  ui {
+    section {
+      h1 "Shared keyed list"
+      div .count {
+        span model.rows.length
+      }
+      div .selection {
+        span model.selected
+      }
+      div .controls {
+        button "Create" => dispatch("create")
+        button "Update" => dispatch("update")
+        button "Append" => dispatch("append")
+        button "Swap" => dispatch("swap")
+        button "Remove" => dispatch("remove")
+        button "Clear" => dispatch("clear")
+      }
+      ul {
+        each row in model.rows by row.id {
+          RowView row=row {
+            on selected(id) => dispatch("select",id)
+          }
+        }
+      }
+    }
+  }
+}

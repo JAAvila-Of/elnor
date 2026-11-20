@@ -1,0 +1,5 @@
+component SubmitButton(label: string, disabled: boolean) {
+  ui {
+    submit disabled=(disabled) label
+  }
+}

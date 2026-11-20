@@ -1,0 +1,13 @@
+component ConfirmDialog(title: string, message: string) {
+  event confirmed()
+  event cancelled()
+
+  ui {
+    section .dialog {
+      h2 title
+      p message
+      button "Cancelar" => emit.cancelled()
+      button "Eliminar" => emit.confirmed()
+    }
+  }
+}

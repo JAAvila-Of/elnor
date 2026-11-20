@@ -1,0 +1,20 @@
+name: Documentation issue
+description: Report an inaccurate, unclear, or missing explanation.
+labels: [documentation, triage]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page, heading, or relevant link
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is inaccurate, unclear, or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested correction or example

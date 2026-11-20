@@ -1,0 +1,362 @@
+import type {DeskViewClient, DeskViewState, DeskState, VersionedTask} from "./client.js";
+import type {TaskPriority, TaskStatus} from "../task-desk/types.js";
+import {taskDraftForm} from "../task-desk/task-draft-form.js";
+import TaskList from "../task-desk/TaskList.eln";
+
+component PersistentTaskDesk(client: DeskViewClient) {
+  state status: DeskState = client.read();
+  state draftAttemptKey = status.attempt?.key;
+  state selected: VersionedTask | null = (
+    status.attempt && status.attempt.command.kind !== "delete"
+      ? {
+        ...status.attempt.command.task,
+        revision: status.attempt.command.kind === "replace"
+          ? status.attempt.command.expectedRevision
+          : 0
+      }
+      : null
+  );
+  state creating = status.attempt?.command.kind === "create";
+  state deleting = false;
+  state confirmDiscardKey: string | undefined = undefined;
+  state title = selected?.title ?? "";
+  state assignee = selected?.assignee ?? "";
+  state description = selected?.description ?? "";
+  state priority: TaskPriority = selected?.priority ?? "normal";
+  state taskStatus: TaskStatus = selected?.status ?? "open";
+  state pending = false;
+  state retired = false;
+  state controller: AbortController | null = null;
+  state error = "";
+  state showDraftErrors = false;
+  state unwatch = client.observe?.(syncJournal);
+  calc draftValues = readDraft();
+  calc draft = taskDraftForm.validate(draftValues);
+  calc rejectedCommand = (
+    status.phase === "rejected" && status.attempt?.key === draftAttemptKey
+      ? status.attempt?.command
+      : undefined
+  );
+  calc rejectedTask = (
+    rejectedCommand && rejectedCommand.kind !== "delete" && selected &&
+      (rejectedCommand.kind === "create"
+        ? creating
+        : !creating && selected.id === rejectedCommand.taskId && selected.revision === rejectedCommand.expectedRevision)
+      ? rejectedCommand.task
+      : undefined
+  );
+  calc draftErrors = (
+    taskDraftForm.fieldErrors({
+      issues: [
+        ...(rejectedTask
+          ? status.issues?.filter(({path: [field]}) => draftValues[field].trim() === rejectedTask?.[field].trim()) ?? []
+          : []),
+        ...(showDraftErrors ? draft.issues ?? [] : [])
+      ]
+    })
+  );
+  calc terminal = (
+    status.phase === "applied" ||
+    status.phase === "rejected" ||
+    status.phase === "conflict" ||
+    status.phase === "missing"
+  );
+
+  calc deleted = (
+    !creating &&
+    selected !== null &&
+    (status.tombstones ?? []).some(item => item.id === selected?.id)
+  );
+  calc newerRevision = (
+    status.tasks.some(item => item.id === selected?.id && item.revision > (selected?.revision ?? 0))
+  );
+  calc attemptTaskId = (
+    status.attempt?.command.kind === "create"
+      ? status.attempt.command.task.id
+      : status.attempt?.command.taskId
+  );
+  calc currentAttemptTask = status.tasks.find(item => item.id === attemptTaskId);
+  calc removedAttemptTask = status.tombstones?.find(item => item.id === attemptTaskId);
+
+  on dispose() => retire()
+
+  action retire() {
+    retired = true;
+    unwatch?.();
+    const active = controller;
+    controller = null;
+    active?.abort();
+  }
+  action syncJournal(next: DeskState) {
+    status = next;
+    if (next.attempt?.key !== confirmDiscardKey || next.receiptReview !== "ready") {
+      confirmDiscardKey = undefined;
+    }
+  }
+  action readDraft() {
+    return {
+      title,
+      assignee,
+      description,
+      priority
+    };
+  }
+  action choose(id: string) {
+    if (retired || pending || status.phase !== "empty") return;
+    if (selected) {
+      error = "Discard the open draft before selecting another task";
+      return;
+    }
+    const task = status.tasks.find(item => item.id === id);
+    if (!task) return;
+    openDraft(task);
+  }
+  action openDraft(task: VersionedTask) {
+    draftAttemptKey = undefined;
+    selected = {...task};
+    title = task.title;
+    assignee = task.assignee;
+    description = task.description;
+    priority = task.priority;
+    taskStatus = task.status;
+    error = "";
+    showDraftErrors = false;
+  }
+  action beginCreate() {
+    if (pending || retired || status.phase !== "empty" || !status.loaded || selected) return;
+    creating = true;
+    const initialPriority: TaskPriority = "normal";
+    openDraft({
+      id: "new-draft",
+      title: "",
+      assignee: "",
+      description: "",
+      priority: initialPriority,
+      status: "open",
+      revision: 0
+    });
+  }
+  action askDelete() {
+    if (pending || retired || status.phase !== "empty" || creating || deleted || !selected) return;
+    deleting = true;
+  }
+  action keepTask() {
+    if (pending || retired || status.phase !== "empty") return;
+    deleting = false;
+  }
+  action copyDeleted() {
+    if (pending || retired || status.phase !== "empty" || !deleted || !selected) return;
+    creating = true;
+    selected = {
+      ...selected,
+      id: "new-draft",
+      revision: 0
+    };
+    taskStatus = "open";
+    error = "Draft copied; a new identity will be assigned when you create the task";
+  }
+  action discard() {
+    if (pending || retired || status.phase !== "empty") return;
+    draftAttemptKey = undefined;
+    selected = null;
+    creating = false;
+    deleting = false;
+    error = "";
+  }
+  action reviewRevision() {
+    if (pending || retired || status.phase !== "empty" || creating || !selected) return;
+    const current = status.tasks.find(item => item.id === selected?.id);
+    if (!current || current.revision <= selected.revision) {
+      error = "Refresh tasks to review a newer revision";
+      return;
+    }
+    selected = {...current};
+    error = "Current revision selected; review your draft before saving";
+  }
+  action askDiscardAttempt() {
+    if (pending || retired || status.receiptReview !== "ready") return;
+    confirmDiscardKey = status.attempt?.key;
+  }
+  action keepAttempt() {
+    confirmDiscardKey = undefined;
+  }
+  action async perform(kind: "refresh" | "save" | "recover" | "retry" | "delete" | "finish" | "discard-attempt") {
+    if (pending || retired) return;
+    const before = status;
+    if (kind === "finish" && (!before.attempt || !terminal)) return;
+    guard (
+      kind === "discard-attempt"
+      && (!confirmDiscardKey || before.attempt?.key !== confirmDiscardKey || before.receiptReview !== "ready")
+    )
+    if (kind === "refresh") keepAttempt();
+    guard (
+      kind === "delete"
+      && (!selected || !deleting || creating || deleted || status.phase !== "empty")
+    )
+    if (kind === "save" && (deleting || deleted || status.phase !== "empty")) return;
+    const input = kind === "save" && selected ? taskDraftForm.validate(readDraft()).value : undefined;
+    if (kind === "save") {
+      if (!selected) return;
+      showDraftErrors = !input;
+      if (!input) return;
+    }
+    pending = true;
+    error = "";
+    const active = new AbortController();
+    controller = active;
+    try {
+      let value: DeskViewState = status;
+      if (kind === "refresh") value = await client.refresh(active.signal);
+      else if (kind === "recover") value = await client.recover(active.signal,before.attempt?.key);
+      else if (kind === "retry") value = await client.retry(active.signal,before.attempt?.key);
+      else if (kind === "finish") value = await client.acknowledge(active.signal,before.attempt?.key);
+      else if (kind === "discard-attempt") value = await client.discardUnavailable(active.signal,before.attempt?.key);
+      else if (selected && kind === "delete") value = await client.remove(selected.id,selected.revision,active.signal);
+      else if (input && selected && creating) value = await client.create(input,active.signal);
+      else if (input && selected) value = await client.save({
+        ...input,
+        id: selected.id,
+        status: taskStatus
+      },selected.revision,active.signal);
+      if (!retired && !active.signal.aborted) {
+        if (value.admission) error = value.message + " Your draft has not been sent.";
+        if (kind === "save" && !value.admission && value.submittedAttemptKey) {
+          draftAttemptKey = value.submittedAttemptKey;
+        }
+        const latest = client.observe ? client.read() : value;
+        syncJournal(latest.attempt?.key === value.attempt?.key ? value : latest);
+        if (kind === "finish" && value.phase === "empty") completeFinish(before);
+        if (
+          kind === "discard-attempt"
+          && value.discardedAttemptKey
+          && value.discardedAttemptKey === draftAttemptKey
+        ) {
+          selected = null;
+          creating = false;
+          deleting = false;
+          draftAttemptKey = undefined;
+        }
+      }
+    } catch { if (!retired) error = "Could not complete the edit request"; }
+    finally {
+      if (!retired) {
+        pending = false;
+        controller = null;
+      }
+    }
+  }
+  action completeFinish(before: DeskState) {
+    const operation = before.attempt?.command;
+    const sent = operation && operation.kind !== "delete" ? operation.task : undefined;
+    if (status.phase === "empty") deleting = false;
+    if (before.attempt?.key !== draftAttemptKey) return;
+    draftAttemptKey = undefined;
+    if (before.phase === "applied" && sent) {
+      const input = taskDraftForm.validate(readDraft()).value;
+      if (
+        input
+        && input.title === sent.title
+        && input.assignee === sent.assignee
+        && input.description === sent.description
+        && input.priority === sent.priority
+        && (operation?.kind === "create" || taskStatus === sent.status)
+      ) {
+        selected = null;
+        creating = false;
+      } else if (operation?.kind === "create") {
+        selected = {
+          ...sent,
+          revision: 1
+        };
+        creating = false;
+      }
+    }
+  }
+
+  ui {
+    main {
+      h1 "Persistent Task desk"
+      p "Local persistent tasks. Create, edit and delete use confirmed provider outcomes."
+      small status.phase
+      p (error || status.message)
+      button disabled=(pending) "Refresh tasks" => perform("refresh")
+      button disabled=(pending || status.phase !== "empty" || !status.loaded || selected !== null) "New task" => beginCreate()
+      TaskList tasks=status.tasks selectedId=(selected?.id ?? null) {
+        on selected(id) => choose(id)
+      }
+      if selected {
+        section {
+          h2 (creating ? "New task draft" : deleted ? `Deleted task draft: ${selected.id}` : `Editing ${selected.id} at revision ${selected.revision}`)
+          form focus-invalid=(true) => perform("save") {
+            input error=(draftErrors.title) "Edit title" <-> title
+            input error=(draftErrors.assignee) "Edit assignee" <-> assignee
+            textarea error=(draftErrors.description) "Edit description" <-> description
+            select error=(draftErrors.priority) "Edit priority" <-> priority {
+              option "Normal" => "normal"
+              option "High" => "high"
+            }
+            select disabled=(creating) "Edit status" <-> taskStatus {
+              option "Open" => "open"
+              option "In progress" => "in-progress"
+              option "Done" => "done"
+            }
+            submit disabled=(pending || deleting || deleted || status.phase !== "empty" || !status.loaded) (creating ? "Create task" : "Save changes")
+          }
+          button disabled=(pending || status.phase !== "empty") "Discard draft" => discard()
+          button disabled=(pending || creating || deleted || !newerRevision || status.phase !== "empty") "Use current revision" => reviewRevision()
+          if !creating && !deleted {
+            button disabled=(pending || status.phase !== "empty") "Delete task" => askDelete()
+          }
+          if deleting {
+            p `Delete ${selected.id} at revision ${selected.revision}? The local draft is kept.`
+            button disabled=(pending || status.phase !== "empty") "Keep task" => keepTask()
+            button disabled=(pending || status.phase !== "empty") "Confirm deletion" => perform("delete")
+          }
+          if deleted {
+            p "This task is deleted. Copy or discard the retained draft."
+            button disabled=(pending || status.phase !== "empty") "Copy draft to new task" => copyDeleted()
+          }
+        }
+      }
+      if status.attempt {
+        p (status.attempt.command.kind === "delete" ? `Delete attempt: ${status.attempt.command.taskId}` : `Saved attempt: ${status.attempt.command.task.title}`)
+      }
+      if status.receiptReview === "needs-refresh" {
+        p "Refresh tasks to review the current task before discarding this attempt."
+      }
+      if status.receiptReview === "ready" {
+        section {
+          h2 "Review current task"
+          if currentAttemptTask {
+            p `${currentAttemptTask.title} (revision ${currentAttemptTask.revision})`
+            p `Status: ${currentAttemptTask.status} · Priority: ${currentAttemptTask.priority}`
+            p `Assignee: ${currentAttemptTask.assignee || "Unassigned"}`
+            if currentAttemptTask.description {
+              p currentAttemptTask.description
+            }
+          }
+          if removedAttemptTask {
+            p `The task is deleted at revision ${removedAttemptTask.revision}.`
+          }
+          if !currentAttemptTask && !removedAttemptTask {
+            p "The task is absent from the current workspace."
+          }
+          if confirmDiscardKey {
+            p "Discard the saved attempt from this browser? This leaves the provider's tasks unchanged."
+            if confirmDiscardKey === draftAttemptKey {
+              p "The draft open for this attempt will also close."
+            }
+            button disabled=(pending) "Keep saved attempt" => keepAttempt()
+            button disabled=(pending) "Confirm discard" => perform("discard-attempt")
+          }
+          if !confirmDiscardKey {
+            button disabled=(pending) "Discard saved attempt" => askDiscardAttempt()
+          }
+        }
+      }
+      button disabled=(pending || !status.attempt || status.phase === "blocked") "Check result" => perform("recover")
+      button disabled=(pending || status.phase !== "retryable") "Retry saved edit" => perform("retry")
+      button disabled=(pending || !terminal) "Finish attempt" => perform("finish")
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "initialTasks": [
+    {
+      "id": "TASK-1",
+      "title": "Improve parser recovery",
+      "assignee": "Alex",
+      "description": "Keep useful source feedback while a component is being edited.",
+      "priority": "high",
+      "status": "open"
+    },
+    {
+      "id": "TASK-2",
+      "title": "Review preview messages",
+      "assignee": "Morgan",
+      "description": "Make saved changes and the last valid build easy to distinguish.",
+      "priority": "normal",
+      "status": "in-progress"
+    },
+    {
+      "id": "TASK-3",
+      "title": "Document component events",
+      "assignee": "Sam",
+      "description": "Explain how typed child events update application state.",
+      "priority": "normal",
+      "status": "done"
+    },
+    {
+      "id": "TASK-4",
+      "title": "Check keyboard navigation",
+      "assignee": "",
+      "description": "Exercise search, selection and editing with native controls.",
+      "priority": "normal",
+      "status": "open"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+component WorkPanel(title: string) {
+  ui {
+    section .work-panel {
+      header .panel-heading {
+        h2 title
+        slot actions
+      }
+      slot
+    }
+  }
+}

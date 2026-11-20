@@ -1,0 +1,11 @@
+{
+  "name": "elnor-runtime-comparison-dependencies",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "svelte": "5.57.3",
+    "esbuild": "0.28.2"
+  }
+}

@@ -1,0 +1,64 @@
+import type {RecoveryClient, RecoveryState} from "./client.js";
+
+component RecoverableSave(client: RecoveryClient) {
+  state draft = "";
+  state status: RecoveryState = client.read();
+  state pending = false;
+  state error = "";
+  state retired = false;
+  state controller: AbortController | null = null;
+  calc label = pending ? "Working" : status.phase === "empty" ? "Ready" : status.phase === "unknown" ? "Unknown result" : status.phase === "retryable" ? "Ready to retry" : status.phase === "applied" ? "Applied" : status.phase === "rejected" ? "Rejected" : "Blocked";
+
+  on dispose() => retire()
+
+  action retire() {
+    retired = true;
+    const active = controller;
+    controller = null;
+    pending = false;
+    active?.abort();
+  }
+  action async run(kind: "save" | "recover" | "retry") {
+    if (pending || retired) return;
+    pending = true;
+    error = "";
+    const active = new AbortController();
+    controller = active;
+    try {
+      const value = await (kind === "save" ? client.save(draft, active.signal) : kind === "recover" ? client.recover(active.signal) : client.retry(active.signal));
+      if (!retired && !active.signal.aborted) status = value;
+    } catch {
+      if (!retired) error = "Could not inspect the saved attempt";
+    } finally {
+      if (!retired) { pending = false; controller = null; }
+    }
+  }
+  action finish() {
+    if (pending || retired) return;
+    const previous = status;
+    status = client.acknowledge();
+    if (status.phase === "empty" && previous.phase === "applied" && draft.trim() === previous.intent?.text) draft = "";
+  }
+  action clear() {
+    if (pending || status.phase !== "empty" || retired) return;
+    draft = "";
+    error = "";
+  }
+
+  ui {
+    section {
+      form => run("save") {
+        on reset() => clear()
+        input "Text" <-> draft
+        submit disabled=(pending || status.phase !== "empty") "Save"
+        reset disabled=(pending || status.phase !== "empty") "Clear draft"
+      }
+      p (status.intent?.text ?? "")
+      small label
+      strong (error || status.message)
+      button disabled=(pending || !status.intent) "Check result" => run("recover")
+      button disabled=(pending || status.phase !== "retryable") "Retry saved attempt" => run("retry")
+      button disabled=(pending || (status.phase !== "applied" && status.phase !== "rejected")) "Finish attempt" => finish()
+    }
+  }
+}

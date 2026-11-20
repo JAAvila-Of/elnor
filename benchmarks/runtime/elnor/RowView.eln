@@ -1,0 +1,10 @@
+import type {Row} from "../model.mjs";
+component RowView(row: Row) {
+  event selected(id: number)
+  ui {
+    li {
+      button row.label => emit.selected(row.id)
+      small row.id
+    }
+  }
+}

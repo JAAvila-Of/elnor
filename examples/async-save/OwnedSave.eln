@@ -1,0 +1,88 @@
+import type { SaveIntent, SaveReceipt, SaveAttempt } from "./contracts.js";
+
+component OwnedSave(persist: (intent: SaveIntent, signal: AbortSignal) => Promise<SaveReceipt>, createKey: () => string) {
+  event saved(value: SaveReceipt)
+  state draft = "";
+  state lastSaved = "";
+  state attempt: SaveAttempt | null = null;
+  state pending = false;
+  state error = "";
+  state retired = false;
+  state controller: AbortController | null = null;
+
+  on dispose() => retire()
+
+  action retire() {
+    retired = true;
+    const active = controller;
+    controller = null;
+    pending = false;
+    active?.abort();
+  }
+
+  action clear() {
+    if (pending || attempt !== null || retired) return;
+    draft = "";
+    error = "";
+  }
+
+  action async save() {
+    if (pending || retired) return;
+    pending = true;
+    error = "";
+    let confirmed: SaveReceipt | null = null;
+    try {
+      let current = attempt;
+      if (current === null) {
+        const input = draft;
+        const text = input.trim();
+        if (!text) {
+          error = "Enter text";
+          return;
+        }
+        const key = createKey();
+        if (retired) return;
+        if (!key.trim()) throw Error("Empty key");
+        current = Object.freeze({input, intent: Object.freeze({key, text})});
+        attempt = current;
+      }
+      const active = new AbortController();
+      controller = active;
+      const receipt = await persist(current.intent, active.signal);
+      const receiptKey = receipt.key;
+      const receiptText = receipt.text;
+      if (retired || active.signal.aborted) return;
+      if (receiptKey !== current.intent.key || receiptText !== current.intent.text) {
+        error = "Save not confirmed. Retry the same attempt.";
+        return;
+      }
+      confirmed = Object.freeze({key: receiptKey, text: receiptText});
+      lastSaved = confirmed.text;
+      attempt = null;
+      if (draft === current.input) draft = "";
+    } catch {
+      if (!retired) error = attempt === null ? "Could not start save" : "Save not confirmed. Retry the same attempt.";
+    } finally {
+      if (!retired) {
+        pending = false;
+        controller = null;
+      }
+    }
+    if (confirmed !== null && !retired) emit.saved(confirmed);
+  }
+
+  ui {
+    section {
+      form => save() {
+        on reset() => clear()
+        input "Text" <-> draft
+        submit disabled=(pending) (pending ? "Saving..." : attempt !== null ? "Retry save" : "Save")
+        reset disabled=(pending || attempt !== null) "Clear draft"
+      }
+      p lastSaved
+      span (attempt === null ? "" : attempt.intent.text)
+      small (pending ? "Saving" : "Idle")
+      strong error
+    }
+  }
+}

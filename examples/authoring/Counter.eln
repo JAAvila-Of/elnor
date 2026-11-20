@@ -1,0 +1,17 @@
+component Counter(label?: string) {
+  event changed(value: number)
+  state count = 0;
+  calc caption = `${label ?? "Counter"}: ${count}`;
+
+  action increment() {
+    count++;
+    emit.changed(count);
+  }
+
+  ui {
+    section .counter {
+      h2 caption
+      button "Increment" => increment()
+    }
+  }
+}

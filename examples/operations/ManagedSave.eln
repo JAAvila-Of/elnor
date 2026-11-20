@@ -1,0 +1,73 @@
+import {createOperation, idleOperationState} from "./operation.js";
+import type {OperationState} from "./operation.js";
+import type {SaveIntent, SaveReceipt, SaveAttempt} from "../async-save/contracts.js";
+
+component ManagedSave(persist: (intent: SaveIntent, signal: AbortSignal) => Promise<SaveReceipt>, createKey: () => string) {
+  event saved(value: SaveReceipt)
+  state draft = "";
+  state lastSaved = "";
+  state attempt: SaveAttempt | null = null;
+  state message = "";
+  state progress: OperationState = idleOperationState();
+  state operation = createOperation<string, SaveReceipt>({policy: "single-flight", publish: value => report(value), success: value => accept(value)});
+
+  on dispose() => operation.dispose()
+
+  action report(value: OperationState) {
+    progress = value;
+    message = value.status === "error" ? (attempt === null ? "Could not start save" : "Save not confirmed. Retry the same attempt.") : "";
+  }
+  action async persistIntent(input: string, signal: AbortSignal) {
+    let current = attempt;
+    if (current === null) {
+      const text = input.trim();
+      const key = createKey();
+      if (signal.aborted) throw Error("Retired");
+      if (!key.trim()) throw Error("Empty key");
+      current = Object.freeze({input, intent: Object.freeze({key, text})});
+      attempt = current;
+    }
+    const receipt = await persist(current.intent, signal);
+    const key = receipt.key;
+    const text = receipt.text;
+    if (signal.aborted) throw Error("Retired");
+    if (key !== current.intent.key || text !== current.intent.text) throw Error("Unconfirmed receipt");
+    return Object.freeze({key, text});
+  }
+  action accept(value: SaveReceipt) {
+    if (attempt === null) return;
+    const input = attempt.input;
+    attempt = null;
+    lastSaved = value.text;
+    if (draft === input) draft = "";
+    emit.saved(value);
+  }
+  action callbackFailed(error: unknown) { message = "Could not apply save result"; }
+  action save() {
+    if (attempt === null && !draft.trim()) {
+      if (progress.status !== "pending") message = "Enter text";
+      return;
+    }
+    void operation.run(draft, persistIntent).catch(callbackFailed);
+  }
+  action clear() {
+    if (progress.status === "pending" || attempt !== null) return;
+    draft = "";
+    message = "";
+  }
+
+  ui {
+    section {
+      form => save() {
+        on reset() => clear()
+        input "Text" <-> draft
+        submit disabled=(progress.status === "pending") (progress.status === "pending" ? "Saving..." : attempt !== null ? "Retry save" : "Save")
+        reset disabled=(progress.status === "pending" || attempt !== null) "Clear draft"
+      }
+      p lastSaved
+      span (attempt === null ? "" : attempt.intent.text)
+      small (progress.status === "pending" ? "Saving" : "Idle")
+      strong message
+    }
+  }
+}

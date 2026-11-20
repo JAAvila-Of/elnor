@@ -1,0 +1,19 @@
+import type { User } from "../types.js";
+
+component UserList(users: User[]) {
+  event selected(user: User)
+
+  ui {
+    section .users {
+      h2 "Usuarios"
+      ul {
+        each user in users by user.id {
+          li {
+            button user.name => emit.selected(user)
+            small user.role
+          }
+        }
+      }
+    }
+  }
+}

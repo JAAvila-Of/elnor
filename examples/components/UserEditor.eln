@@ -1,0 +1,106 @@
+import type { User } from "../types.js";
+import Panel from "./Panel.eln";
+import UserList from "./UserList.eln";
+import ConfirmDialog from "./ConfirmDialog.eln";
+
+component UserEditor(users: User[], persist: (id: string, name: string) => Promise<void>, remove: (id: string) => Promise<void>) {
+  event saved(user: User)
+  event deleted(id: string)
+
+  state localUsers: User[] = [...users];
+  state query = "";
+  state selectedId: string | null = null;
+  state draftName = "";
+  state saving = false;
+  state confirming = false;
+  state error = "";
+  calc visible = localUsers.filter(u => u.name.toLowerCase().includes(query.toLowerCase()));
+
+  action choose(user: User) {
+    selectedId = user.id;
+    draftName = user.name;
+    error = "";
+  }
+
+  action clearSearch() {
+    query = "";
+  }
+
+  action cancelDelete() {
+    confirming = false;
+  }
+
+  action openDelete() {
+    confirming = true;
+  }
+
+  action async save() {
+    if (selectedId === null) return;
+    if (draftName.trim().length < 2) {
+      error = "El nombre debe tener 2 caracteres como mínimo";
+      return;
+    }
+    saving = true;
+    error = "";
+    try {
+      await persist(selectedId, draftName.trim());
+      const original = localUsers.find(u => u.id === selectedId);
+      if (original) {
+        const updated = {
+          ...original,
+          name: draftName.trim()
+        };
+        localUsers = localUsers.map(u => u.id === selectedId ? updated : u);
+        emit.saved(updated);
+      }
+    } catch {
+      error = "No se pudo guardar el usuario";
+    } finally {
+      saving = false;
+    }
+  }
+
+  action async destroy() {
+    if (selectedId === null) return;
+    const id = selectedId;
+    try {
+      await remove(id);
+      localUsers = localUsers.filter(u => u.id !== id);
+      confirming = false;
+      selectedId = null;
+      emit.deleted(id);
+    } catch {
+      confirming = false;
+      error = "No se pudo eliminar el usuario";
+    }
+  }
+
+  ui {
+    Panel title="Administrar usuarios" {
+      fill actions {
+        button "Limpiar búsqueda" => clearSearch()
+      }
+      input "Buscar usuarios" <-> query
+      UserList users=visible {
+        on selected(value) => choose(value)
+      }
+    }
+    if selectedId !== null {
+      section .editor {
+        h2 `Editar: ${draftName}`
+        input "Nombre" <-> draftName
+        button (saving ? "Guardando..." : "Guardar") => save()
+        button "Eliminar usuario..." => openDelete()
+        if error {
+          p error
+        }
+      }
+    }
+    if confirming {
+      ConfirmDialog title="Eliminar usuario" message="Esta acción no se puede deshacer" {
+        on confirmed() => destroy()
+        on cancelled() => cancelDelete()
+      }
+    }
+  }
+}

@@ -1,0 +1,72 @@
+component OwnedSearch(request: (query: string, signal: AbortSignal) => Promise<string>) {
+  event loaded(value: string)
+  state query = "";
+  state result = "";
+  state pending = false;
+  state error = "";
+  state generation = 0;
+  state controller: AbortController | null = null;
+
+  on dispose() => cancel()
+
+  action cancel() {
+    generation++;
+    const previous = controller;
+    controller = null;
+    pending = false;
+    previous?.abort();
+  }
+
+  action clear() {
+    cancel();
+    query = "";
+    result = "";
+    error = "";
+  }
+
+  action async search() {
+    const text = query.trim();
+    if (!text) {
+      cancel();
+      error = "Enter a query";
+      return;
+    }
+    const version = ++generation;
+    const previous = controller;
+    const active = new AbortController();
+    controller = active;
+    previous?.abort();
+    const signal = active.signal;
+    if (signal.aborted || version !== generation) return;
+    pending = true;
+    error = "";
+    try {
+      const value = await request(text, signal);
+      if (signal.aborted || version !== generation) return;
+      result = value;
+      emit.loaded(value);
+    } catch {
+      if (!signal.aborted && version === generation) error = "Search failed";
+    } finally {
+      if (version === generation) {
+        pending = false;
+        controller = null;
+      }
+    }
+  }
+
+  ui {
+    section {
+      form => search() {
+        on reset() => clear()
+        input "Query" <-> query
+        submit "Search"
+        button disabled=(!pending) "Cancel" => cancel()
+        reset "Clear"
+      }
+      p result
+      small (pending ? "Loading" : "Idle")
+      strong error
+    }
+  }
+}

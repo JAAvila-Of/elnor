@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import urlsplit, unquote
 import argparse, json, socket, sqlite3, sys, threading, time
 from ledger import Ledger, RECEIPT_UNAVAILABLE, maintain_scheduled_receipts, token
@@ -32,6 +33,11 @@ def serve(ledger, port, faults, *, check_title=None, receipt_interval_seconds=No
     class Server(ThreadingHTTPServer):
         # The concurrent replay test opens eight connections in one burst.
         request_queue_size = max(16, ThreadingHTTPServer.request_queue_size)
+
+        def server_bind(self):
+            # A numeric loopback address needs no reverse DNS during startup.
+            TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_): pass

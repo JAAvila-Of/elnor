@@ -50,14 +50,15 @@ export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency
     throw Error('Explicit project output and generated check directories are required');
   const output=path.resolve(outputDir),cache=path.resolve(checkOutputDir);
   plainPath(output);plainPath(cache);
-  if(within(output,cache)||within(cache,output))fail('Output and generated check directories must be disjoint');
+  const outputRoot=sourcePath(output),cacheRoot=sourcePath(cache);
+  if(within(outputRoot,cacheRoot)||within(cacheRoot,outputRoot))fail('Output and generated check directories must be disjoint');
   const entryKey=sourceKey(entry);
-  if(within(output,sourcePath(entry)))fail('Output must not contain the entry source');
+  if(within(outputRoot,sourcePath(entry)))fail('Output must not contain the entry source');
   const initial=inspectOutput(output,entryKey);
   let checkedProgram;
   const checked=checkSurfaceProject(entry,{outputDir:cache,onDependency,onProgram:captureProps?value=>{checkedProgram=value;}:undefined});
   if(checked.diagnostics.length)throw Object.assign(Error('Project source has diagnostics'),{diagnostics:checked.diagnostics,sources:checked.sources});
-  for(const file of checked.sources.keys())if(within(output,file))fail('Output must not contain imported Surface sources');
+  for(const file of checked.sources.keys())if(within(outputRoot,file))fail('Output must not contain imported Surface sources');
   const validateProps=captureProps?createPreviewPropsValidator(checkedProgram,entry):undefined;
 
   // Plan and emit entirely in the caller-owned scratch area before output adoption.

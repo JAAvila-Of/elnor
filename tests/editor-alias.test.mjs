@@ -20,7 +20,7 @@ class WorkspaceEdit {
 }
 const uri=file=>({scheme:'file',fsPath:file,toString:()=>file});
 async function fixture(t,{files={},initialDocuments=[]}={}){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-adapter-'));
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-adapter-'));
   fs.writeFileSync(path.join(root,'Badge.eln'),original);
   fs.writeFileSync(path.join(root,'Screen.eln'),consumer);
   for(const [name,source] of Object.entries(files)){
@@ -62,7 +62,7 @@ async function fixture(t,{files={},initialDocuments=[]}={}){
   t.after(async()=>{
     for(const subscription of subscriptions)subscription.dispose();
     fs.unlinkSync(path.join(root,'Alias.eln'));
-    const resolved=path.resolve(root),temporary=path.resolve(os.tmpdir())+path.sep;
+    const resolved=path.resolve(root),temporary=path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep;
     assert.ok(resolved.startsWith(temporary)&&path.basename(resolved).startsWith('elnor-adapter-'));
     fs.rmSync(resolved,{recursive:true,force:true});
   });

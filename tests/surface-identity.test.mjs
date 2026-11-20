@@ -12,7 +12,7 @@ import {setupDOM,FakeNode,tick} from './fake-dom.mjs';
 import {createServer} from '../src/server.mjs';
 
 function fixture(t,files,entry='Screen.eln'){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-identity-'));
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-identity-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   fs.writeFileSync(path.join(root,'package.json'),'{"type":"module"}');
   const graph=new Map();

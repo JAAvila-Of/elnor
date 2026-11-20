@@ -11,11 +11,11 @@ import {setupDOM,FakeNode,tick} from './fake-dom.mjs';
 
 const script=fileURLToPath(new URL('../scripts/build-project.mjs',import.meta.url));
 function fixture(t){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-project-build-')),project=path.join(root,'project with spaces');fs.mkdirSync(project);
+  const root=fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()),'elnor-project-build-')),project=path.join(root,'project with spaces');fs.mkdirSync(project);
   const links=[];
   t.after(()=>{
     for(const link of links)if(fs.lstatSync(link,{throwIfNoEntry:false}))fs.unlinkSync(link);
-    assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('elnor-project-build-'));
+    assert.ok(path.resolve(root).startsWith(path.resolve(fs.realpathSync.native(os.tmpdir()))+path.sep)&&path.basename(root).startsWith('elnor-project-build-'));
     fs.rmSync(root,{recursive:true,force:true});
   });
   for(const name of ['App.eln','Counter.eln'])fs.writeFileSync(path.join(project,name),fs.readFileSync(new URL('../examples/authoring/'+name,import.meta.url)));
@@ -75,6 +75,10 @@ test('build refuses foreign nonempty destinations and file destinations without 
 test('build refuses output overlap with entry or imported Surface sources',t=>{
   const f=fixture(t),original=f.read('App.eln');
   assert.throws(()=>buildSurfaceProject(f.entry,{outputDir:f.project,checkOutputDir:f.checkOutputDir}),/contain the entry source/);
+  if(process.platform==='win32'){
+    const suppliedProject=path.join(os.tmpdir(),path.relative(fs.realpathSync.native(os.tmpdir()),f.project));
+    assert.throws(()=>buildSurfaceProject(f.entry,{outputDir:suppliedProject,checkOutputDir:f.checkOutputDir}),/contain the entry source/);
+  }
   assert.equal(f.read('App.eln'),original);build(f);const before=fs.readFileSync(path.join(f.outputDir,'manifest.json'),'utf8');
   const added=path.join(f.outputDir,'Added.eln');fs.writeFileSync(added,'component Added() { ui { span "kept" } }');
   f.write('App.eln','import Added from "../output with spaces/Added.eln";\n'+original);

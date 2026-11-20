@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -26,9 +30,21 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+      - id: python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Use physical temporary path on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          scratch="$(cd "$RUNNER_TEMP" && pwd -P)"
+          printf 'TMPDIR=%s\n' "$scratch" >> "$GITHUB_ENV"
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm test
+        env:
+          ELNOR_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
 
   commits:
     name: Conventional commits
@@ -68,7 +84,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5
         with:
           fail-on-severity: high
 

@@ -1,5 +1,9 @@
 # Elnor — Surface feasibility experiments
 
+[CI status](https://github.com/JAAvila-Of/elnor/actions/workflows/ci.yml) ·
+[Releases](https://github.com/JAAvila-Of/elnor/releases) ·
+[Contributing](CONTRIBUTING.md)
+
 Elnor is an experimental frontend framework with a language called Surface.
 Its provisional name definition is **Expressive Language for Native, Optimized
 Rendering**. Here, native refers to the browser DOM. This meaning was adopted
@@ -138,8 +142,9 @@ npm run preview -- UserList
 npm run probe:language
 ```
 
-Node.js 20+ is recommended. Spike 004 was tested on Windows with Node 24.21.0
-and the locked TypeScript 5.9.3 dependency. See [the contribution guide](CONTRIBUTING.md).
+Use Node.js 24 to match CI on Linux, Windows, and macOS. See
+[Surface examples](docs/surface/EXAMPLES.md) for patterns you can try in a
+preview and [the contribution guide](CONTRIBUTING.md) to run focused checks.
 
 ## Current experiments
 
@@ -177,6 +182,5 @@ and [release process](docs/RELEASING.md).
 The preview has no HMR. The service has bounded recovery and an experimental
 VS Code client ([run the editor experiment](editors/vscode/README.md)).
 Full Surface syntax, full formatting/editor integration, generalized security, SSR, nonces, HPKE and
-production performance remain unproven. Restrictive preview CSP was exercised
-in the bounded browser pilot. Historical Spanish documents and example
-copy have not yet all been migrated to English.
+production performance remain unproven. The bounded browser pilot exercised
+restrictive preview CSP.

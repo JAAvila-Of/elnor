@@ -1,6 +1,7 @@
 """Loopback-only HTTP/SQLite test provider; not an authenticated application server."""
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlsplit, unquote
 import argparse,json,re,socket,sqlite3,sys,threading,uuid
 from contextlib import closing
@@ -102,6 +103,11 @@ def serve(filename,port=0,faults=False):
     class Server(ThreadingHTTPServer):
         # Admit the bursts used by concurrent replay tests while the accept loop runs.
         request_queue_size = max(16, ThreadingHTTPServer.request_queue_size)
+
+        def server_bind(self):
+            # A numeric loopback address needs no reverse DNS during startup.
+            TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
 
     server=Server(('127.0.0.1',port),Handler);server.daemon_threads=True
     print(json.dumps({'port':server.server_port,'epoch':ledger.epoch,'sqlite':sqlite3.sqlite_version,'settings':ledger.settings}),flush=True)

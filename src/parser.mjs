@@ -3,6 +3,9 @@
 import { getTs } from './typescript.mjs';
 import {actionBodyText, actionFunctionPrefix, guardedBodyOffset, projectGuardedBody} from './action-guards.mjs';
 const ts = getTs();
+export function supportsDisabled(tag) {
+  return ['button', 'submit', 'reset', 'input', 'textarea', 'checkbox', 'select', 'fieldset'].includes(tag);
+}
 export function supportsFieldError(tag) {
   return ['input', 'textarea', 'select'].includes(tag);
 }
@@ -138,13 +141,13 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if(!s||s.startsWith('//'))continue;
       if(s==='}'){if(!nested)throw diagnostic('ELN-UI-BRACE',source,offset,'unexpected }');closed=true;break;}
       let m;
-      const styled=/^(section|main|article|header|div|ul|li|footer|nav|h1|h2|h3|p|strong|small|span|output|input|textarea|checkbox|select|button|form|submit|reset)\s+(?=[A-Za-z][\w-]*\s*=)/d.exec(s);
+      const styled=/^(section|main|article|header|div|ul|li|footer|nav|fieldset|h1|h2|h3|p|strong|small|span|output|legend|input|textarea|checkbox|select|button|form|submit|reset)\s+(?=[A-Za-z][\w-]*\s*=)/d.exec(s);
       if(styled){
         const tag=styled[1],style={},seen=new Set();let cursor=styled[0].length;
         while(true){
           const property=/^([A-Za-z][\w-]*)\s*=\s*/.exec(s.slice(cursor));if(!property)break;
           const name=property[1],nameAt=base+cursor;
-          if(!['class','disabled','aria-pressed','aria-current','error','focus-invalid','on-input'].includes(name)||name==='disabled'&&!['button','submit','reset','input','textarea','checkbox','select'].includes(tag)||name.startsWith('aria-')&&tag!=='button'||name==='error'&&!supportsFieldError(tag)||name==='focus-invalid'&&tag!=='form'||name==='on-input'&&!supportsInputCallback(tag))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Unsupported DOM property ${name} on ${tag}`);
+          if(!['class','disabled','aria-pressed','aria-current','error','focus-invalid','on-input'].includes(name)||name==='disabled'&&!supportsDisabled(tag)||name.startsWith('aria-')&&tag!=='button'||name==='error'&&!supportsFieldError(tag)||name==='focus-invalid'&&tag!=='form'||name==='on-input'&&!supportsInputCallback(tag))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Unsupported DOM property ${name} on ${tag}`);
           if(seen.has(name))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Duplicate DOM property ${name}`);seen.add(name);cursor+=property[0].length;
           if(s[cursor]!=='(')throw diagnostic('ELN-DOM-ATTRIBUTE',source,base+cursor,`Expected a parenthesized ${name} expression`);
           let parsed;try{parsed=balanced(s,cursor,'(',')');}catch(error){throw diagnostic(name==='class'?'ELN-CLASS-SYNTAX':'ELN-DOM-SYNTAX',source,base+(error.start??cursor),error.message);}
@@ -154,8 +157,9 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
           cursor=parsed.end;cursor+=/^\s*/.exec(s.slice(cursor))[0].length;
         }
         const rest=s.slice(cursor),at=base+cursor;
-        if(['section','main','article','header','div','ul','li','footer','nav'].includes(tag)){
-          if(rest!=='{')throw diagnostic('ELN-CLASS-SYNTAX',source,at,'Expected a container block after class expression');
+        if(['section','main','article','header','div','ul','li','footer','nav','fieldset'].includes(tag)){
+          if(rest!=='{')throw diagnostic(tag==='fieldset'?'ELN-DOM-SYNTAX':'ELN-CLASS-SYNTAX',source,at,
+            tag==='fieldset'?'Expected a fieldset block after DOM properties':'Expected a container block after class expression');
           out.push({kind:'container',tag,className:null,...style,children:nodes(true),line});continue;
         }
         if(tag==='form'){
@@ -181,7 +185,7 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
           out.push({kind:'button',label:checkExpr(source,at,button[1],tolerant),labelSpan:capture(button,1,at),expr:checkExpr(source,at,button[2],tolerant),exprSpan:capture(button,2,at),...style,line});continue;
         }
         if(!rest)throw diagnostic('ELN-CLASS-SYNTAX',source,at,'Expected a text expression after class');
-        out.push({kind:'text',tag,expr:checkExpr(source,at,rest,tolerant),exprSpan:range(at,rest.length),...style,line});continue;
+        out.push({kind:'text',tag,...(tag==='legend'?{tagSpan:range(base,tag.length)}:{}),expr:checkExpr(source,at,rest,tolerant),exprSpan:range(at,rest.length),...style,line});continue;
       }
       if((m=/^form(?:\s+\.([A-Za-z][\w-]*))?\s+=>\s*(.+?)\s*\{$/d.exec(s))){out.push({kind:'container',tag:'form',className:m[1]??null,tagSpan:range(base,4),submitExpr:checkExpr(source,offset,m[2],tolerant),submitSpan:capture(m,2,base),children:nodes(true),line});continue;}
       if((m=/^reset\s+(.+)$/d.exec(s))){out.push({kind:'button',reset:true,tagSpan:range(base,5),label:checkExpr(source,offset,m[1],tolerant),labelSpan:capture(m,1,base),expr:'undefined',line});continue;}
@@ -190,7 +194,7 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if((m=/^each\s+([A-Za-z_]\w*)\s+in\s+(.+?)\s+by\s+(.+?)\s*\{$/d.exec(s))){
         out.push({kind:'each',variable:m[1],variableSpan:capture(m,1,base),collection:checkExpr(source,offset,m[2],tolerant),collectionSpan:capture(m,2,base),key:checkExpr(source,offset,m[3],tolerant),keySpan:capture(m,3,base),children:nodes(true),line});continue;
       }
-      if((m=/^(section|main|article|header|div|ul|li|footer|nav)(?:\s+\.([A-Za-z][\w-]*))?\s*\{$/.exec(s))){
+      if((m=/^(section|main|article|header|div|ul|li|footer|nav|fieldset)(?:\s+\.([A-Za-z][\w-]*))?\s*\{$/.exec(s))){
         out.push({kind:'container',tag:m[1],className:m[2]??null,children:nodes(true),line});continue;
       }
       if((m=/^fill\s+([A-Za-z_]\w*)\s*\{$/d.exec(s))){out.push({kind:'fill',name:m[1],nameSpan:capture(m,1,base),children:nodes(true),line});continue;}
@@ -205,8 +209,8 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if((m=/^button\s+(.+?)\s+=>\s+(.+)$/d.exec(s))){
         out.push({kind:'button',label:checkExpr(source,offset,m[1],tolerant),labelSpan:capture(m,1,base),expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
       }
-      if((m=/^(h1|h2|h3|p|strong|small|span|output)\s+(.+)$/d.exec(s))){
-        out.push({kind:'text',tag:m[1],expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
+      if((m=/^(h1|h2|h3|p|strong|small|span|output|legend)\s+(.+)$/d.exec(s))){
+        out.push({kind:'text',tag:m[1],...(m[1]==='legend'?{tagSpan:capture(m,1,base)}:{}),expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
       }
       if((m=/^([A-Z][A-Za-z_0-9]*)(?:\s+(.+?))?\s*\{$/d.exec(s))){
         out.push({kind:'component',name:m[1],nameSpan:capture(m,1,base),props:parseAttributes(source,m[2]?base+m.indices[2][0]:base+m[1].length,m[2]||'',tolerant,recoveryDiagnostics),attributesSpan:range(base+m[1].length,s.length-m[1].length-1),children:nodes(true),line});continue;
@@ -347,8 +351,14 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   if(new Set(events.map(x=>x.name)).size!==events.length)throw diagnostic('ELN-SEM-EVENT',source,0,'duplicate event declaration');
   const mutable=new Set(states.map(x=>x.name));
   const slots=new Set();
-  function validate(nodes,inForm=false){
-    for(const n of nodes){
+  function validate(nodes,inForm=false,parentTag){
+    for(const [index,n] of nodes.entries()){
+      if(n.tag==='legend'&&(parentTag!=='fieldset'||index!==0)){
+        const error=Object.assign(diagnostic('ELN-LEGEND-POSITION',source,n.tagSpan.start,
+          'Place legend first inside its fieldset'),{length:n.tagSpan.length});
+        if(!tolerant)throw error;
+        recoveryDiagnostics.push(error);
+      }
       if(n.tag==='form'){
         const handlers=n.children.filter(child=>child.kind==='on');
         if(handlers.length>1)throw Object.assign(diagnostic('ELN-FORM-EVENT',source,handlers[1].nameSpan.start,'Only one reset handler is supported on a form'),{length:handlers[1].nameSpan.length});
@@ -361,7 +371,7 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       if(n.tag==='form'&&inForm)throw diagnostic('ELN-FORM-NESTING',source,n.tagSpan.start,'Nested forms are not supported');
       if(n.kind==='input'&&!mutable.has(n.binding))throw diagnostic('ELN-SEM-BIND',source,['textarea','checkbox','select'].includes(n.tag)?n.bindingSpan.start:0,`binding ${n.binding} must be state`);
       if(n.kind==='slot'){if(slots.has(n.name))throw diagnostic('ELN-SEM-SLOT',source,0,`duplicate slot ${n.name}`);slots.add(n.name);}
-      if(n.children)validate(n.children,inForm||n.tag==='form');
+      if(n.children)validate(n.children,inForm||n.tag==='form',n.tag);
     }
   }
   validate(ui);

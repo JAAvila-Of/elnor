@@ -105,6 +105,22 @@ the generated label does not. Keep `.name` or the expression on a container,
 not both. Other DOM attributes and style objects remain outside this contract.
 See [usage, tests and native/browser evidence](../mvp/TYPED-DOM-CLASSES.md).
 
+## Native control groups
+
+Use a `fieldset` block to group related controls. An optional `legend` takes
+a text expression and names the group. Place it first and directly inside its
+fieldset. Both elements accept the usual `class=(...)` prefix.
+On `fieldset`, `disabled=(booleanExpression)` uses the browser's native
+group behavior. Use it when related controls share an enabled state.
+
+```elnor
+fieldset disabled=(busy) {
+  legend "Contact preferences"
+  input "Email address" <-> email
+  checkbox "Send updates" <-> updates
+}
+```
+
 ## Experimental multiline text binding
 
 `textarea "Description" <-> draft` uses a local mutable string state and a

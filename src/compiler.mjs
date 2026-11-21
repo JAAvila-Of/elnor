@@ -182,6 +182,11 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       if(n.kind==='container'){
         lines.push(`${indent}const ${unique} = ${returnRoot?runtime.rootElement:runtime.element}(${parent},${JSON.stringify(n.tag)},${JSON.stringify(classLiteral(n.classExpr)??n.className)});`);
         if(n.classExpr!==undefined&&classLiteral(n.classExpr)===undefined)lines.push(`${indent}${runtime.classBinding}(${unique},()=>(${fragment(n.classExpr,locals)}),${owner});`);
+        if(n.disabledExpr!==undefined){
+          const literal=disabledLiteral(n.disabledExpr);
+          lines.push(literal!==undefined?`${indent}${runtime.setDisabled}(${unique},${literal});`
+            :`${indent}${runtime.disabledBinding}(${unique},()=>(${fragment(n.disabledExpr,locals)}),${owner});`);
+        }
         if(n.submitExpr!==undefined){
           const reset=n.resetExpr===undefined?'undefined':'()=>{'+fragment(n.resetExpr,locals)+';}';
           const focus=n.focusInvalidExpr===undefined?'':',()=>('+fragment(n.focusInvalidExpr,locals)+')';

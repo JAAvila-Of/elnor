@@ -424,7 +424,7 @@ test('retirement during an awaited finally completes the cleanup and stops after
   assert.deepEqual(form.reported,[]);
 });
 
-for(const [name,body] of [
+for(const [name,body,reported=[]] of [
   ['a labeled break',`    block: try {
       await host.wait("load");
       break block;
@@ -451,7 +451,7 @@ for(const [name,body] of [
       }
     } catch {
       host.log("after try");
-    }`]
+    }`,['Failed']]
 ]){
   test(`retirement during cleanup stops ${name} from reaching ordinary code`,async t=>{
     const form=await mountCleanup(t,body);
@@ -463,7 +463,8 @@ for(const [name,body] of [
     form.resolve('release');
     await settle();
     assert.deepEqual(form.log,['wait load','wait release']);
-    assert.deepEqual(form.reported,[]);
+    // An error thrown by ordinary code is reported; nothing else escapes.
+    assert.deepEqual(form.reported.map(error=>error.message),reported);
     assert.deepEqual(form.view(),['Ready','idle','','']);
   });
 }
@@ -575,6 +576,40 @@ test('a stale failure passing through a retired cleanup is not reported',async t
   assert.deepEqual(form.reported,[]);
   assert.deepEqual(form.view(),['Ready','idle','','']);
 });
+
+for(const [name,body,reported=[]] of [
+  ['finally',`    try {
+      try {
+        await host.wait("load");
+        (host as unknown as {missing(): void}).missing();
+      } finally {
+        await host.wait("release");
+      }
+    } catch {
+      host.log("caught");
+    }`],
+  ['await using',`    try {
+      await using resource = host.resource("release");
+      await host.wait("load");
+      (host as unknown as {missing(): void}).missing();
+    } catch {
+      host.log("caught");
+    }`]
+]){
+  test(`a programming error pending in a retired ${name} cleanup is reported once`,async t=>{
+    const form=await mountCleanup(t,body);
+    form.click('Run');
+    form.resolve('load');
+    await settle();
+    form.click('Switch');
+    form.resolve(name==='finally'?'release':'dispose release');
+    await settle();
+    assert.equal(form.log.includes('caught'),false);
+    assert.equal(form.reported.length,1);
+    assert.ok(form.reported[0] instanceof TypeError);
+    assert.deepEqual(form.view(),['Ready','idle','','']);
+  });
+}
 
 test('a current cleanup failure becomes the member error',async t=>{
   const form=await mountCleanup(t,`    try {
@@ -805,7 +840,7 @@ test('a disposal failure after a body failure produces SuppressedError',async t=
   await settle();
   form.reject('dispose lease',Error('Dispose failed'));
   await settle();
-  assert.deepEqual(form.view(),['Ready','error','','SuppressedError: An error was suppressed during disposal.']);
+  assert.deepEqual(form.view(),['Ready','error','','SuppressedError: An error was suppressed during disposal']);
 });
 
 test('await using in a loop head keeps an explicit diagnostic in the editor and the build',t=>{

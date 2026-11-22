@@ -49,8 +49,10 @@ export function managedSuspensionDiagnostics(ir) {
 // A checkpoint closes each awaited cleanup in ordinary code. It applies a
 // retirement observed during that cleanup: return() at the end of the finally
 // block replaces a pending break, continue, return or throw, so no ordinary
-// code runs afterwards. Nested cleanup gets no checkpoint, because return()
-// there would skip the rest of the enclosing finally block.
+// code runs afterwards. The checkpoint carries the pending error, which the
+// runtime reports unless it is the rejection of awaited work. Nested cleanup
+// gets no checkpoint, because return() there would skip the rest of the
+// enclosing finally block.
 export function managedGeneratorBody(action, {lease, fresh}) {
   const script = parseAction(action);
   const id = name => factory.createIdentifier(name);
@@ -60,15 +62,36 @@ export function managedGeneratorBody(action, {lease, fresh}) {
     factory.createYieldExpression(undefined, cleanup ? call(lease, 'cleanup', [expression]) : expression);
   const delegate = expression =>
     factory.createExpressionStatement(factory.createYieldExpression(factory.createToken(ts.SyntaxKind.AsteriskToken), expression));
-  const checkpoint = () => factory.createExpressionStatement(factory.createYieldExpression(undefined,
-    factory.createPropertyAccessExpression(id(lease), 'checkpoint')));
   const constant = (name, initializer) => factory.createVariableStatement(undefined, factory.createVariableDeclarationList(
     [factory.createVariableDeclaration(name, undefined, undefined, initializer)], ts.NodeFlags.Const));
 
   const result = ts.transform(script.statements[0].body, [context => root => {
     let cleanupSuspensions = 0;
     const visitor = cleanup => node => visit(node, cleanup);
-    const cleanupBlock = (statements, cleanup) => factory.createBlock(cleanup ? statements : [...statements, checkpoint()], true);
+    // try/catch/finally whose finally contains awaited cleanup. In ordinary
+    // code, the error pending at the end of the cleanup reaches the checkpoint.
+    function settled(attempt, catchClause, cleanupStatements, cleanup) {
+      if (cleanup) return factory.createTryStatement(attempt, catchClause, factory.createBlock(cleanupStatements, true));
+      const failure = fresh('failure');
+      const capture = () => {
+        const error = fresh('error');
+        return factory.createCatchClause(error, factory.createBlock([
+          factory.createExpressionStatement(factory.createAssignment(id(failure), id(error))),
+          factory.createThrowStatement(id(error))
+        ], true));
+      };
+      const guarded = catchClause ? factory.createBlock([factory.createTryStatement(attempt, catchClause, undefined)], true) : attempt;
+      return factory.createBlock([
+        factory.createVariableStatement(undefined, factory.createVariableDeclarationList(
+          [factory.createVariableDeclaration(failure, undefined, undefined, factory.createPropertyAccessExpression(id(lease), 'none'))],
+          ts.NodeFlags.Let)),
+        factory.createTryStatement(guarded, capture(), factory.createBlock([
+          factory.createTryStatement(factory.createBlock(cleanupStatements, true), capture(), factory.createBlock([
+            factory.createExpressionStatement(factory.createYieldExpression(undefined, call(lease, 'checkpoint', [id(failure)])))
+          ], true))
+        ], true))
+      ], true);
+    }
 
     function disposalBlock(statements, cleanup) {
       const stack = fresh('disposables'), error = fresh('error');
@@ -86,9 +109,9 @@ export function managedGeneratorBody(action, {lease, fresh}) {
       cleanupSuspensions++;
       return factory.createBlock([
         constant(stack, call(lease, 'disposables')),
-        factory.createTryStatement(factory.createBlock(body, true),
+        settled(factory.createBlock(body, true),
           factory.createCatchClause(error, factory.createBlock([factory.createExpressionStatement(call(stack, 'fail', [id(error)]))], true)),
-          cleanupBlock([delegate(call(stack, 'dispose'))], cleanup))
+          [delegate(call(stack, 'dispose'))], cleanup)
       ], true);
     }
 
@@ -113,12 +136,12 @@ export function managedGeneratorBody(action, {lease, fresh}) {
       cleanupSuspensions++;
       return factory.createBlock([
         constant(iteration, call(lease, 'asyncIteration', [ts.visitNode(node.expression, visitor(cleanup))])),
-        factory.createTryStatement(factory.createBlock([loop], true),
+        settled(factory.createBlock([loop], true),
           factory.createCatchClause(error, factory.createBlock([
             factory.createExpressionStatement(call(iteration, 'fail')),
             factory.createThrowStatement(id(error))
           ], true)),
-          cleanupBlock([delegate(call(iteration, 'close'))], cleanup))
+          [delegate(call(iteration, 'close'))], cleanup)
       ], true);
     }
 
@@ -141,9 +164,11 @@ export function managedGeneratorBody(action, {lease, fresh}) {
         const tryBlock = ts.visitNode(node.tryBlock, visitor(cleanup));
         const catchClause = ts.visitNode(node.catchClause, visitor(cleanup));
         const before = cleanupSuspensions;
-        let finallyBlock = ts.visitNode(node.finallyBlock, visitor(true));
-        if (finallyBlock && cleanupSuspensions !== before) finallyBlock = cleanupBlock(finallyBlock.statements, cleanup);
-        return factory.updateTryStatement(node, tryBlock, catchClause, finallyBlock);
+        const finallyBlock = ts.visitNode(node.finallyBlock, visitor(true));
+        if (!finallyBlock || cleanupSuspensions === before || cleanup) {
+          return factory.updateTryStatement(node, tryBlock, catchClause, finallyBlock);
+        }
+        return settled(tryBlock, catchClause, finallyBlock.statements, cleanup);
       }
       if (ts.isBlock(node) && node.statements.some(declaresAwaitUsing)) return disposalBlock(node.statements, cleanup);
       return ts.visitEachChild(node, visitor(cleanup), context);

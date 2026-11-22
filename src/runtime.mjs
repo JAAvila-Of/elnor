@@ -69,11 +69,13 @@ const idleAction = Object.freeze({status:'idle'});
 const pendingAction = Object.freeze({status:'pending'});
 
 // A managed body yields ordinary suspensions as plain values. Suspensions in
-// cleanup yield a CleanupStep: retirement never interrupts them. A checkpoint
-// after cleanup applies a retirement observed while the cleanup was running.
+// cleanup yield a CleanupStep: retirement never interrupts them. A Checkpoint
+// at the end of ordinary cleanup applies a retirement observed while the
+// cleanup was running, and carries the error pending at that point.
 class CleanupStep { constructor(value) { this.value = value; } }
-const checkpointStep = Object.freeze({});
-const disposalMessage = 'An error was suppressed during disposal.';
+class Checkpoint { constructor(failure) { this.failure = failure; } }
+const noFailure = Object.freeze({});
+const disposalMessage = 'An error was suppressed during disposal';
 const isObject = value => value !== null && (typeof value === 'object' || typeof value === 'function');
 
 function getMethod(value, key) {
@@ -86,7 +88,8 @@ function getMethod(value, key) {
 
 function suppressedError(error, suppressed) {
   if (typeof SuppressedError === 'function') return new SuppressedError(error, suppressed, disposalMessage);
-  return Object.assign(new Error(disposalMessage), {name:'SuppressedError', error, suppressed});
+  const hidden = value => ({value, writable:true, configurable:true});
+  return Object.defineProperties(new Error(disposalMessage), {name:hidden('SuppressedError'), error:hidden(error), suppressed:hidden(suppressed)});
 }
 
 function reportActionFailure(error) {
@@ -231,7 +234,8 @@ function asyncIteration(iterable) {
 
 const managedHelpers = Object.freeze({
   cleanup: value => new CleanupStep(value),
-  checkpoint: checkpointStep,
+  checkpoint: failure => new Checkpoint(failure),
+  none: noFailure,
   disposables,
   asyncIteration
 });
@@ -305,9 +309,14 @@ export function createActionGroup(policy, readOwner, ownerScope) {
           step = iterator.next();
           while (!step.done) {
             const yielded = step.value;
-            if (yielded === checkpointStep) {
+            if (yielded instanceof Checkpoint) {
               if (retired || isCurrent()) step = iterator.next();
-              else { retired = true; step = iterator.return(); }
+              else {
+                retired = true;
+                const {failure} = yielded;
+                if (failure !== noFailure && !awaitedFailures?.has(failure)) reportActionFailure(failure);
+                step = iterator.return();
+              }
               continue;
             }
             const cleanup = yielded instanceof CleanupStep;

@@ -180,16 +180,25 @@ then happens at the end of the outermost cleanup.
   replaced it. Resources that need exclusive access must be serialized by
   the application.
 - For the current invocation, a cleanup failure becomes the member `error`.
-  For a retired invocation, an error that escapes the cleanup goes to
-  `reportError`. Where `reportError` does not exist, as in Node.js, the error
-  is rethrown in a microtask and behaves like any other uncaught exception.
-  The rejection of awaited work is not reported, even when it propagates
-  through the cleanup. The member state is unchanged, and awaiting the
-  retired call still yields `undefined`.
+  For a retired invocation, the error goes to `reportError` instead. This
+  covers a failure of the cleanup itself. It also covers an error that ordinary
+  code threw before retirement and that was still pending when the cleanup
+  finished. Where `reportError` does not exist, as in Node.js, the error is
+  rethrown in a microtask and behaves like any other uncaught exception. The
+  rejection of awaited work is not reported, even when it propagates through
+  the cleanup. The member state is unchanged, and awaiting the retired call
+  still yields `undefined`.
 
-A managed `await` costs more than a native one. In a local Node.js 24
-measurement, one ordinary suspension took about 113 ns, against 46 ns for a
-native `await`. A cleanup suspension took about 91 ns. The measurement
+Without retirement, a managed body behaves like the same native async
+function. A differential suite in `tests/action-group-differential.test.mjs`
+runs each body both ways on Node.js 24 and compares the events and the
+outcome. It covers `await` in nested expressions, `try`, `catch` and
+`finally`, labels, `switch`, `for await`, and `await using`. TypeError
+messages are engine specific, so the suite compares only their type.
+
+A managed `await` costs more than a native one. In two local Node.js 24
+measurements, one ordinary suspension took 113–121 ns, against 45–46 ns for a
+native `await`. A cleanup suspension took 91–100 ns. The measurement
 excludes the awaited work itself.
 
 `await using` in a `for`, `for in`, or plain `for of` head receives

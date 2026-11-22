@@ -97,3 +97,104 @@ This consolidation changes documentation only. It reuses those retained results
 without claiming a new test run, native editor run or human acceptance. The
 compiler/runtime/editor and examples remain unchanged. The broader
 [application roadmap](ECOSYSTEM-ROADMAP.md) remains open under its own criteria.
+
+## Action groups
+
+Surface action groups bind async actions to a component owner. The owner
+names a prop, state, or calc in the component. An action joins the group
+with `async` and uses ordinary `await` in its body.
+
+The group declaration states the concurrency policy once for its members.
+Keeping the request and follow-up logic in the action body preserves normal
+TypeScript control flow, including `try`, `catch`, and `finally`. It also
+keeps the action signature free of a callback parameter for applying results.
+
+```elnor
+action group dashboard(workspace) single-flight
+
+action async refreshSummary() in dashboard {
+  return await loadSummary(workspace.id);
+}
+```
+
+The group exposes `pending`. Each member exposes readonly `pending`,
+`status`, `result`, and `error` properties. Checking for
+`status === "success"` gives access to the awaited return type in `result`.
+An execution failure is `unknown` in `error`. Awaiting a member call yields
+its return value on success and `undefined` if it was skipped, retired, or
+failed. Starting a new invocation clears that member's previous outcome.
+
+- `single-flight` admits one member at a time for the current owner.
+- `latest` admits the newest member and retires the previous invocation.
+- Changing the owner or unmounting the component retires its invocation.
+  A direct state owner gets a new revision on every change, including a
+  return to its original value within the same turn. Props and calcs use
+  the owner value observed at admission and resumption.
+- A retired invocation unwinds at its next ordinary resumption, as if that
+  `await` had returned. Writes to Surface state bindings through the retired
+  invocation or its Surface helpers are discarded.
+
+### Cleanup after retirement
+
+Retirement never interrupts cleanup. Cleanup covers `finally` blocks, the
+disposal of `using` and `await using` declarations, and the closing of a
+`for await` iterator. An `await` inside cleanup resumes with its own result
+even after the invocation is retired, so the cleanup runs to completion.
+
+```elnor
+action async exportReport() in reports {
+  const session = await openExport(report.id);
+  try {
+    return await session.write(rows);
+  } finally {
+    await session.close();
+  }
+}
+```
+
+If the owner changes while `session.write` is pending, the action unwinds at
+that `await` and still awaits `session.close()`. If the owner changes while
+`session.close()` is pending, the close completes and the action then
+unwinds. The `finally` block runs to its end, and its pending exit is
+discarded. This applies whether the exit was a `break`, a `continue`, a
+`return`, or an exception. Ordinary code after the cleanup does not run for a
+retired invocation, and this includes an enclosing `catch`. A
+`finally` block nested inside another cleanup runs to its end. The unwinding
+then happens at the end of the outermost cleanup.
+
+- `await using` disposes resources in reverse declaration order, together with
+  `using` declarations in the same block. Each async disposer is awaited. A
+  resource without `Symbol.asyncDispose` falls back to `Symbol.dispose`, and
+  its disposal is still awaited once. A disposal failure that follows an
+  earlier failure becomes a `SuppressedError`.
+- `for await` accepts async iterables and sync iterables. Leaving the loop
+  early with `break`, `return`, an exception, or retirement calls the
+  iterator's `return` method and awaits it. The loop does not close an
+  iterator that finished or whose `next` failed. If the loop body threw, a
+  failure from `return` is ignored and the body error is kept. For a sync
+  iterable, each value is awaited, and a rejected value closes the iterable.
+- A `for await` loop written inside `finally` is cleanup too. Retirement does
+  not stop it, so a loop over an unbounded stream in `finally` never lets the
+  invocation finish. Bound such loops or move them out of `finally`.
+- The cleanup of a retired invocation can overlap with the invocation that
+  replaced it. Resources that need exclusive access must be serialized by
+  the application.
+- For the current invocation, a cleanup failure becomes the member `error`.
+  For a retired invocation, an error that escapes the cleanup goes to
+  `reportError`. Where `reportError` does not exist, as in Node.js, the error
+  is rethrown in a microtask and behaves like any other uncaught exception.
+  The rejection of awaited work is not reported, even when it propagates
+  through the cleanup. The member state is unchanged, and awaiting the
+  retired call still yields `undefined`.
+
+A managed `await` costs more than a native one. In a local Node.js 24
+measurement, one ordinary suspension took about 113 ns, against 46 ns for a
+native `await`. A cleanup suspension took about 91 ns. The measurement
+excludes the awaited work itself.
+
+`await using` in a `for`, `for in`, or plain `for of` head receives
+`ELN-ACTION-GROUP-SUSPENSION`. Declare the resource inside the loop body, or
+use it in a `for await` head. The group does not abort an external request
+or undo its effects. State protection applies to binding assignments, so
+application code still owns in-place mutation and side effects outside
+Surface.

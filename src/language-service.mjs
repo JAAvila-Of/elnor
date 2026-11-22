@@ -7,6 +7,7 @@ import {sourceKey,sourcePath,sourceImport} from './source-identity.mjs';
 import {createDocumentStore} from './document-store.mjs';
 import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
+import {actionGroupPolicies} from './action-groups.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
 
 const ts = getTs();
@@ -150,10 +151,21 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
     }
     return [...found.values()];
   }
+  function containsCursor(span, offset) {
+    return span.start <= offset && offset <= span.start + span.length;
+  }
   function completions(file, offset) {
     const doc = requireSurface(file);
     const dom=domPropertyCompletions(doc.source,offset,doc.file,doc.projection.ir);if(dom!==null)return dom;
     if (!doc.projection.ir) return [];
+    const {actionGroups,actions}=doc.projection.ir;
+    const policy=actionGroups.find(group=>containsCursor(group.policySpan,offset));
+    const member=actions.find(action=>action.groupSpan&&containsCursor(action.groupSpan,offset));
+    if(policy||member){
+      const span=policy?.policySpan??member.groupSpan;
+      const names=policy?actionGroupPolicies:[...new Set(actionGroups.map(group=>group.name))];
+      return names.map(name=>({name,kind:policy?'keyword':'const',replacementSpan:{file:doc.file,...span}}));
+    }
     const context = doc.projection.propContexts.find(({node}) => {
       const span = node.attributesSpan;
       return offset >= span.start && offset <= span.start + span.length

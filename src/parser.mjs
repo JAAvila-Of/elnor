@@ -2,6 +2,7 @@
 // It recognizes typed component props/events, named/default slots, and composition.
 import { getTs } from './typescript.mjs';
 import {actionBodyText, actionFunctionPrefix, guardedBodyOffset, projectGuardedBody} from './action-guards.mjs';
+import {actionGroupPolicies} from './action-groups.mjs';
 const ts = getTs();
 export function supportsDisabled(tag) {
   return ['button', 'submit', 'reset', 'input', 'textarea', 'checkbox', 'select', 'fieldset'].includes(tag);
@@ -266,7 +267,12 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   const body=balanced(source,pos,'{','}',tolerant,guardRecovery);
   if(skip(source,body.end)!==source.length)throw diagnostic('ELN-PARSE-TRAIL',source,body.end,'unexpected content after component');
   pos++;
-  const states=[],calcs=[],actions=[],events=[];let ui=null,disposal=null;
+  const states=[],calcs=[],actions=[],events=[],actionGroups=[];let ui=null,disposal=null;
+  function groupError(code, span, message) {
+    const error=Object.assign(diagnostic(code,source,span.start,message),{length:span.length});
+    if(!tolerant)throw error;
+    recoveryDiagnostics.push(error);
+  }
   while(pos<body.end-1){
     pos=skip(source,pos);if(pos>=body.end-1)break;
     const remaining=source.slice(pos);let match;
@@ -300,10 +306,24 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       if(declarations.length>1)throw diagnostic('ELN-EVENT-ARITY',source,start,'spike 003 supports at most one event argument');
       events.push({name:match[1],nameSpan:capture(match,1,pos),params:declarations,line:source.slice(0,pos).split('\n').length});pos=p.end;continue;
     }
+    if((match=/^action[ \t]+group[ \t]+([A-Za-z_]\w*)[ \t]*\([ \t]*([A-Za-z_]\w*)[ \t]*\)[ \t]*([\w-]*)[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(remaining))){
+      const group={name:match[1],nameSpan:capture(match,1,pos),owner:match[2],ownerSpan:capture(match,2,pos),
+        policy:match[3],policySpan:capture(match,3,pos),line:source.slice(0,pos).split('\n').length};
+      if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
+        'Choose single-flight or latest as the action group policy');
+      actionGroups.push(group);pos+=match[0].length;continue;
+    }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){
       const start=pos+match[0].length-1,p=balanced(source,start,'(',')');
-      const blockAt=skip(source,p.end),b=balanced(source,blockAt,'{','}',tolerant,guardRecovery);
-      const action={name:match[2],nameSpan:capture(match,2,pos),params:p.contents,paramsSpan:range(start+1,p.contents.length),bodySpan:range(blockAt+1,b.contents.length),async:!!match[1],line:source.slice(0,pos).split('\n').length};
+      let blockAt=skip(source,p.end),membership;
+      const member=/^in\b[ \t]*([A-Za-z_]\w*|)/d.exec(source.slice(blockAt));
+      if(member){
+        membership={group:member[1],groupSpan:capture(member,1,blockAt)};
+        if(!match[1])groupError('ELN-ACTION-GROUP-ASYNC',membership.groupSpan,'Add async to an action that joins a group');
+        blockAt=skip(source,blockAt+member[0].length);
+      }
+      const b=balanced(source,blockAt,'{','}',tolerant,guardRecovery);
+      const action={name:match[2],nameSpan:capture(match,2,pos),params:p.contents,paramsSpan:range(start+1,p.contents.length),bodySpan:range(blockAt+1,b.contents.length),async:!!match[1],line:source.slice(0,pos).split('\n').length,...membership};
       const prefix=actionFunctionPrefix(action);
       Object.assign(action,projectGuardedBody(ts,source,action,prefix,
         at=>balanced(source,at,'{','}',tolerant).end,
@@ -348,6 +368,20 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   if(!ui)throw diagnostic('ELN-UI-MISSING',source,body.end-1,'component needs ui');
   const names=[...params,...states,...calcs,...actions].map(x=>x.name);
   if(new Set(names).size!==names.length)throw diagnostic('ELN-SEM-NAME',source,0,'duplicate binding');
+  const boundNames=new Set([...names,'emit']);
+  const owners=new Set([...params,...states,...calcs].map(item=>item.name));
+  const groups=new Set();
+  for(const group of actionGroups){
+    if(boundNames.has(group.name))groupError('ELN-ACTION-GROUP-NAME',group.nameSpan,`Choose an unused name for action group '${group.name}'`);
+    else groups.add(group.name);
+    boundNames.add(group.name);
+    if(!owners.has(group.owner))groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
+      `Action group owner '${group.owner}' must name a prop, state or calc in this component`);
+  }
+  for(const action of actions)if(action.groupSpan&&!groups.has(action.group)){
+    groupError('ELN-ACTION-GROUP-MEMBER',action.groupSpan,groups.size
+      ? `Choose a declared action group: ${[...groups].join(', ')}` : 'Declare an action group before adding members');
+  }
   if(new Set(events.map(x=>x.name)).size!==events.length)throw diagnostic('ELN-SEM-EVENT',source,0,'duplicate event declaration');
   const mutable=new Set(states.map(x=>x.name));
   const slots=new Set();
@@ -376,5 +410,5 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   }
   validate(ui);
   const headerStart=headerOffset+headerSource.length-headerSource.trimStart().length;
-  return {name,nameSpan:capture(m,1,0),params,states,calcs,actions,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
+  return {name,nameSpan:capture(m,1,0),params,states,calcs,actions,actionGroups,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
 }

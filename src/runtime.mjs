@@ -47,18 +47,323 @@ export function cell(initial){
   return {get value(){if(current&&!current.disposed){subs.add(current);current.deps.add(subs);}return val;},
     set value(next){if(Object.is(val,next))return;val=next;notify(subs);}};
 }
+
+// Direct state owners get a new identity on every change, including A → B → A.
+export function actionOwnerCell(initial) {
+  const tracked = cell(initial);
+  let value = initial;
+  let revision = {};
+  return {
+    get value() { return tracked.value; },
+    set value(next) {
+      if (Object.is(value, next)) return;
+      value = next;
+      revision = {};
+      tracked.value = next;
+    },
+    get revision() { void tracked.value; return revision; }
+  };
+}
+
+const idleAction = Object.freeze({status:'idle'});
+const pendingAction = Object.freeze({status:'pending'});
+
+// A managed body yields ordinary suspensions as plain values. Suspensions in
+// cleanup yield a CleanupStep: retirement never interrupts them. A checkpoint
+// after cleanup applies a retirement observed while the cleanup was running.
+class CleanupStep { constructor(value) { this.value = value; } }
+const checkpointStep = Object.freeze({});
+const disposalMessage = 'An error was suppressed during disposal.';
+const isObject = value => value !== null && (typeof value === 'object' || typeof value === 'function');
+
+function getMethod(value, key) {
+  if (key === undefined) return undefined;
+  const method = value[key];
+  if (method == null) return undefined;
+  if (typeof method !== 'function') throw new TypeError(`${String(key.description ?? key)} is not a function`);
+  return method;
+}
+
+function suppressedError(error, suppressed) {
+  if (typeof SuppressedError === 'function') return new SuppressedError(error, suppressed, disposalMessage);
+  return Object.assign(new Error(disposalMessage), {name:'SuppressedError', error, suppressed});
+}
+
+function reportActionFailure(error) {
+  if (typeof globalThis.reportError === 'function') globalThis.reportError(error);
+  else queueMicrotask(() => { throw error; });
+}
+
+// Lowered form of the using and await using declarations of one block.
+// Disposal follows DisposeResources: reverse order, awaited async disposers,
+// and SuppressedError when disposal fails after an earlier failure.
+function disposables() {
+  const resources = [];
+  let failed = false, failure;
+  return {
+    use(value, async) {
+      if (value == null) {
+        if (async) resources.push({async});
+        return value;
+      }
+      if (!isObject(value)) throw new TypeError('A using declaration requires an object, null, or undefined');
+      let method;
+      if (async) {
+        method = getMethod(value, Symbol.asyncDispose);
+        const dispose = method ? undefined : getMethod(value, Symbol.dispose);
+        if (dispose) method = function() { Reflect.apply(dispose, this, []); };
+      } else {
+        method = getMethod(value, Symbol.dispose);
+      }
+      if (!method) throw new TypeError(`The value of a ${async ? 'await using' : 'using'} declaration is not disposable`);
+      resources.push({value, async, method});
+      return value;
+    },
+    fail(error) { failed = true; failure = error; },
+    *dispose() {
+      let needsAwait = false, hasAwaited = false;
+      while (resources.length) {
+        const {value, async, method} = resources.pop();
+        if (!async && needsAwait && !hasAwaited) {
+          yield new CleanupStep(undefined);
+          needsAwait = false;
+        }
+        if (!method) { needsAwait = true; continue; }
+        try {
+          const result = Reflect.apply(method, value, []);
+          if (async) {
+            hasAwaited = true;
+            yield new CleanupStep(result);
+          }
+        } catch (error) {
+          failure = failed ? suppressedError(error, failure) : error;
+          failed = true;
+        }
+      }
+      if (needsAwait && !hasAwaited) yield new CleanupStep(undefined);
+      if (failed) throw failure;
+    }
+  };
+}
+
+// Lowered form of for await. `next` resolves to true once the iterator is
+// done and otherwise stores the value. `close` follows AsyncIteratorClose
+// and skips iterators that finished or failed on their own.
+function asyncIteration(iterable) {
+  let iterator, sync = false;
+  const asyncMethod = getMethod(iterable, Symbol.asyncIterator);
+  if (asyncMethod) {
+    iterator = Reflect.apply(asyncMethod, iterable, []);
+  } else {
+    const syncMethod = getMethod(iterable, Symbol.iterator);
+    if (!syncMethod) throw new TypeError('The value of for await is not async iterable');
+    iterator = Reflect.apply(syncMethod, iterable, []);
+    sync = true;
+  }
+  if (!isObject(iterator)) throw new TypeError('The iterator is not an object');
+  const nextMethod = iterator.next;
+  const record = {open:true, failed:false, value:undefined};
+  const finish = () => { record.open = false; };
+  // Returns true when the iterator is done and otherwise stores the value.
+  const read = step => {
+    if (!isObject(step)) throw new TypeError('The iterator result is not an object');
+    if (step.done) { finish(); return true; }
+    record.value = step.value;
+    return false;
+  };
+  const closeSync = () => {
+    try { const method = iterator.return; if (method != null) Reflect.apply(method, iterator, []); } catch {}
+  };
+  // Sync iterables follow CreateAsyncFromSyncIterator: each value is awaited,
+  // a rejected value closes the sync iterator, and closing awaits once.
+  const nextSync = step => {
+    if (!isObject(step)) throw new TypeError('The iterator result is not an object');
+    const done = !!step.done, value = step.value;
+    let wrapper;
+    try { wrapper = Promise.resolve(value); }
+    catch (error) { if (!done) closeSync(); throw error; }
+    if (done) { finish(); return wrapper.then(() => true); }
+    return wrapper.then(
+      resolved => { record.value = resolved; return false; },
+      error => { finish(); closeSync(); throw error; });
+  };
+  record.next = () => {
+    try {
+      const step = Reflect.apply(nextMethod, iterator, []);
+      if (sync) return nextSync(step);
+      return Promise.resolve(step).then(result => {
+        try { return read(result); }
+        catch (error) { finish(); throw error; }
+      }, error => { finish(); throw error; });
+    } catch (error) {
+      finish();
+      throw error;
+    }
+  };
+  record.fail = () => { record.failed = true; };
+  // After a throw completion, failures while closing are ignored and the
+  // original error is kept.
+  record.close = function* () {
+    if (!record.open) return;
+    finish();
+    const failed = record.failed;
+    let result;
+    try {
+      const method = getMethod(iterator, 'return');
+      if (sync) {
+        if (!method) { yield new CleanupStep(undefined); return; }
+        result = Reflect.apply(method, iterator, []);
+        if (!isObject(result)) throw new TypeError('The iterator return result is not an object');
+        void result.done;
+        yield new CleanupStep(result.value);
+        return;
+      }
+      if (!method) return;
+      result = yield new CleanupStep(Reflect.apply(method, iterator, []));
+    } catch (error) {
+      if (failed) return;
+      throw error;
+    }
+    if (!failed && !isObject(result)) throw new TypeError('The iterator return result is not an object');
+  };
+  return record;
+}
+
+const managedHelpers = Object.freeze({
+  cleanup: value => new CleanupStep(value),
+  checkpoint: checkpointStep,
+  disposables,
+  asyncIteration
+});
+
+export function createActionGroup(policy, readOwner, ownerScope) {
+  const active = cell(null);
+  let disposed = false;
+  let owner;
+  const records = new Set();
+
+  function dispose() {
+    disposed = true;
+    active.value = null;
+    for (const record of records) record.value = null;
+  }
+  ownerScope.own(dispose);
+
+  function action(createBody) {
+    const record = cell(null);
+    records.add(record);
+    const visible = () => {
+      const entry = record.value;
+      return entry && Object.is(entry.owner, readOwner()) ? entry.outcome : idleAction;
+    };
+
+    async function run(...args) {
+      if (disposed || ownerScope.disposed) return;
+      const currentOwner = readOwner();
+      const previous = active.value;
+      if (policy === 'single-flight' && previous && Object.is(owner, currentOwner)) return;
+      if (!Object.is(owner, currentOwner)) {
+        owner = currentOwner;
+        for (const other of records) other.value = null;
+      } else if (previous && previous.record !== record) {
+        previous.record.value = null;
+      }
+      const invocation = {record};
+      active.value = invocation;
+      record.value = {owner:currentOwner,outcome:pendingAction};
+      const isCurrent = () => !disposed && !ownerScope.disposed && active.value === invocation && Object.is(currentOwner, readOwner());
+      const cells = new WeakMap();
+      const actions = new WeakMap();
+      const lease = Object.assign(Object.create(managedHelpers), {
+        bindCell(target) {
+          if (!cells.has(target)) cells.set(target, {
+            get value() { return target.value; },
+            set value(value) { if (isCurrent()) target.value = value; }
+          });
+          return cells.get(target);
+        },
+        bindHelper(factory) {
+          if (!actions.has(factory)) actions.set(factory, factory(lease));
+          return actions.get(factory);
+        },
+        bindAction(target) {
+          if (!actions.has(target)) actions.set(target, new Proxy(target, {
+            apply(action, receiver, args) { if (isCurrent()) return Reflect.apply(action, receiver, args); }
+          }));
+          return actions.get(target);
+        }
+      });
+      const fail = error => { record.value = {owner:currentOwner,outcome:{status:'error',error}}; };
+      // Rejections delivered at ordinary suspensions belong to awaited work.
+      // Anything else escaping a retired invocation is a cleanup failure.
+      let awaitedFailures;
+      try {
+        let step;
+        try {
+          const iterator = createBody(lease).apply(this, args);
+          let retired = false;
+          step = iterator.next();
+          while (!step.done) {
+            const yielded = step.value;
+            if (yielded === checkpointStep) {
+              if (retired || isCurrent()) step = iterator.next();
+              else { retired = true; step = iterator.return(); }
+              continue;
+            }
+            const cleanup = yielded instanceof CleanupStep;
+            let value, failed = false;
+            try { value = await (cleanup ? yielded.value : yielded); }
+            catch (error) { value = error; failed = true; }
+            if (!cleanup && !retired && !isCurrent()) {
+              retired = true;
+              step = iterator.return();
+              continue;
+            }
+            if (failed && !cleanup) (awaitedFailures ??= new Set()).add(value);
+            step = failed ? iterator.throw(value) : iterator.next(value);
+          }
+        } catch (error) {
+          if (isCurrent()) fail(error);
+          else if (!awaitedFailures?.has(error)) reportActionFailure(error);
+          return;
+        }
+        let result;
+        try { result = await step.value; }
+        catch (error) {
+          if (isCurrent()) fail(error);
+          return;
+        }
+        if (isCurrent()) {
+          record.value = {owner:currentOwner,outcome:{status:'success',result}};
+          return result;
+        }
+      } finally {
+        if (active.value === invocation) active.value = null;
+      }
+    }
+
+    return Object.defineProperties(run, {
+      status:{get:()=>visible().status},
+      pending:{get:()=>visible().status === 'pending'},
+      result:{get:()=>visible().result},
+      error:{get:()=>visible().error}
+    });
+  }
+
+  return {action, get pending() { return !!active.value && Object.is(owner, readOwner()); }};
+}
 // Generated components install these sentinels before running initializers.
 // A deferred closure sees the real cell once initialization replaces it.
 export function uninitializedBinding(binding){
   const fail=()=>{throw Object.assign(new ReferenceError(
     `ELN-INIT: Cannot access ${binding.kind} '${binding.binding}' before initialization (${binding.file})`
   ),binding,{code:'ELN-INIT'});};
-  return {get value(){return fail();},set value(_next){fail();}};
+  return {get value(){return fail();},set value(_next){fail();},get revision(){return fail();}};
 }
 export function scope(){
   const disposers=[];
   let disposed=false,safe=true,checks=null;
-  return {get [bulkSafe](){return safe&&(!checks||checks.every(check=>check()));},
+  return {get disposed(){return disposed;},get [bulkSafe](){return safe&&(!checks||checks.every(check=>check()));},
     own(fn,kind,check){
       if(disposed){fn();return fn;}
       if(kind!==nativeCleanup)safe=false;

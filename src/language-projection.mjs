@@ -2,6 +2,7 @@
 import {parseSurface} from './parser.mjs';
 import {recoverDomPrefix} from './dom-editor.mjs';
 import {guardCallChecks, missingGuardClose} from './action-guards.mjs';
+import {managedActionNames, managedActionType} from './action-groups.mjs';
 
 export class SourceMap {
   constructor(source) {
@@ -111,6 +112,19 @@ export function projectSurface(source, filename) {
   for (const calc of ir.calcs) {
     g('const '); c(calc.nameSpan); g(' = ('); c(calc.exprSpan); g(');\n');
   }
+  if (ir.actionGroups.length) {
+    const owners = new Set([...ir.params, ...ir.states, ...ir.calcs].map(binding => binding.name));
+    const available = new Set([...owners, ...ir.actions.map(action => action.name)]);
+    const groups = new Set();
+    for (const group of ir.actionGroups) {
+      if (available.has(group.name)) continue;
+      available.add(group.name);
+      groups.add(group.name);
+      g('const '); c(group.nameSpan); g(' = {} as {readonly pending: boolean};\n');
+      if (owners.has(group.owner)) { g('void ('); c(group.ownerSpan); g(');\n'); }
+    }
+    for (const action of ir.actions) if (groups.has(action.group)) { g('void ('); c(action.groupSpan); g(');\n'); }
+  }
   g('const emit = {} as {');
   for (const event of ir.events) {
     c(event.nameSpan); g(': (');
@@ -118,9 +132,15 @@ export function projectSurface(source, filename) {
     g(') => void;');
   }
   g('};\n');
+  const managed = managedActionNames(ir);
   for (const action of ir.actions) {
+    const implementation = managed.get(action.name);
+    if (implementation) {
+      g('const '); c(action.nameSpan); g(` = {} as ${managedActionType(implementation)};\n`);
+    }
     g(action.async ? 'async function ' : 'function ');
-    c(action.nameSpan); g('('); c(action.paramsSpan); g(') {');
+    if (implementation) g(implementation); else c(action.nameSpan);
+    g('('); c(action.paramsSpan); g(') {');
     if(action.bodySegments){
       guardChecks.push(...guardCallChecks(action,map.source.length));
       for(const {span,text,recoveryTail} of action.bodySegments){

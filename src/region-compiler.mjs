@@ -20,6 +20,7 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
  try{
   if(ir.params.length&&!sequential)reject('external-root-props');
   function component(own,parent,props=new Map(),parentInstance=null){
+   if(own.actionGroups.length)reject('action-group-runtime');
    if(own.disposal)reject('component-disposal-not-proven');
    const key=sourceKey(own.filename);if(stack.has(key))reject('recursive-component-graph');if(stack.size>=64||instances.length>=512)reject('composition-expansion-budget');stack.add(key);
    if((!sequential&&own.events.length)||own.slots.length||(!sequential&&own.imports.some(i=>!i.typeOnly&&!i.path.endsWith('.eln'))))reject('component-boundary-not-proven');

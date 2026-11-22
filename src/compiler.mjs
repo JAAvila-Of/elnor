@@ -15,6 +15,7 @@ import {moduleGraphRevision,sharedModuleUrl} from './module-revision.mjs';
 import {proveRenderModule} from './render-module-proof.mjs';
 import {proveDerivedListReplacement} from './surface-hot-proof.mjs';
 import {componentHotContract,hotContract} from './hot-contract.mjs';
+import {managedGeneratorBody} from './managed-action-lowering.mjs';
 import {sourceKey,surfaceRecords,surfaceOutputs,moduleSpecifier,sourcePath,sourceImport} from './source-identity.mjs';
 const ts=getTs();
 const ROOT=fileURLToPath(new URL('..',import.meta.url));
@@ -127,11 +128,30 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   }
   const fresh=nameAllocator(ir.source);
   const helpers=Object.fromEntries(['props','state','calc','emit','target','handlers','slots','root','scope'].map(name=>[name,fresh(name)]));
+  const groups=ir.actionGroups;
+  const stateOwners=new Set(groups.map(group=>group.owner).filter(owner=>ir.states.some(state=>state.name===owner)));
   const runtime=Object.fromEntries([...(hasForm(ir.ui)?['formBinding']:[]),...(hasFieldError(ir.ui)?['fieldErrorBinding']:[]),...(hasAria(ir.ui)?['setAriaBoolean','ariaBooleanBinding']:[]),...(hasDisabled(ir.ui)?['setDisabled','disabledBinding']:[]),...(hasSelect(ir.ui)?['select']:[]),...(hasCheckbox(ir.ui)?['checkbox']:[]),...(hasTextarea(ir.ui)?['textarea']:[]),...(hasClasses(ir.ui)?['setClass','classBinding']:[]),...(hotLists?['runRegionUntracked']:[]),'cell','computed','uninitializedBinding','element','rootElement','text','button','literalText','literalButton','input','when','repeat','mountBoundary','renderComponent','createComponentRoot','renderSlot'].map(name=>[name,fresh(`runtime_${name}`)]));
+  if(groups.length)runtime.createActionGroup=fresh('runtime_createActionGroup');
+  if(stateOwners.size)runtime.actionOwnerCell=fresh('runtime_actionOwnerCell');
   const runtimeChildren=ir.imports.filter(i=>i.path.endsWith('.eln')&&!i.typeOnly);
   const children=new Map(runtimeChildren.map(i=>[i.local,fresh(`child_${i.local}`)]));
   const detachedChildren=new Set(runtimeChildren.filter(i=>detachedImports.has(i.path)).map(i=>i.local));
   const fragment=(code,locals=new Map(),kind='expression')=>rewrite(ir,code,locals,kind,helpers);
+  const managedFactories=new Map(groups.length?ir.actions.map(action=>[action.name,fresh('actionBody')]):[]);
+  const managedBodies=groups.length?ir.actions.map(action=>{
+    const lease=fresh('actionLease');
+    const call=(method,target)=>ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(lease),method),undefined,[target]);
+    const locals=new Map(ir.states.map(state=>[state.name,()=>ts.factory.createPropertyAccessExpression(
+      call('bindCell',ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(helpers.state),state.name)),'value')]));
+    for(const member of ir.actions)locals.set(member.name,()=>member.group
+      ?call('bindAction',ts.factory.createIdentifier(member.name))
+      :call('bindHelper',ts.factory.createIdentifier(managedFactories.get(member.name))));
+    const implementation=action.group
+      ?`function* (${action.params}) ${managedGeneratorBody(action,{lease,fresh})}`
+      :action.functionSource.replace(/^(async )?function [^(]+/,(_,asyncKeyword='')=>`${asyncKeyword}function `);
+    return fragment(`function ${managedFactories.get(action.name)}(${lease}) { return ${implementation}; }`,locals,'statement');
+  }):[];
   const args=fresh('args'),value=fresh('value'),mount=fresh('mount'),render=fresh('render');
   const seed=hot?fresh('hotSeed'):null,capture=hot?fresh('hotCapture'):null;
   const rows=hotLists?fresh('hotRows'):null;
@@ -166,14 +186,21 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     `function ${render}(${helpers.root},${helpers.props},${helpers.handlers},${helpers.slots},${helpers.scope}${hot?`,${seed},${capture}${rows?','+rows:''}`:''}) {`,
     `    const ${helpers.state} = {${stateSentinels}};`,
     `    const ${helpers.calc} = {${calcSentinels}};`,
+    ...groups.map(group=>{
+      const owner=stateOwners.has(group.owner)?`${helpers.state}.${group.owner}.revision`:fragment(group.owner);
+      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope});`;
+    }),
+    ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)});`),
     ...ir.states.map((s,index)=>{
       const init=fragment(s.expr);
-      return `    ${helpers.state}.${s.name} = ${runtime.cell}(${hot?`${seed} ? ${seed}[${index}] : (${init})`:init});`;
+      const makeCell=stateOwners.has(s.name)?runtime.actionOwnerCell:runtime.cell;
+      return `    ${helpers.state}.${s.name} = ${makeCell}(${hot?`${seed} ? ${seed}[${index}] : (${init})`:init});`;
     }),
     ...(hot?[`    ${capture}?.(() => [${ir.states.map(s=>`${helpers.state}.${s.name}.value`).join(',')}]);`]:[]),
     ...ir.calcs.map(d=>`    ${helpers.calc}.${d.name} = ${runtime.computed}(() => (${fragment(d.expr)}),${helpers.scope});`),
     `    const ${helpers.emit} = {${ir.events.map(e=>`${e.name}: (...${args}) => ${helpers.handlers}.${e.name}?.(...${args})`).join(',')}};`,
-    ...ir.actions.map(a=>fragment(a.functionSource,new Map(),'statement')),
+    ...ir.actions.filter(action=>!action.group).map(a=>fragment(a.functionSource,new Map(),'statement')),
+    ...managedBodies,
     ...(ir.disposal?[`    ${helpers.scope}.own(() => { ${fragment(ir.disposal.expr)}; });`]:[]),
   ];
   function emit(nodes,parent,owner,locals=new Map(),indent='    ',exclusive=false,returnRoot=false,hotRow){
@@ -310,7 +337,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
 }
 export function generate(ir,options={}){
  const legacy=generateLegacy(ir,options);let context;
- if(options.hot)return legacy;
+ if(options.hot||ir.actionGroups.length)return legacy;
  const lowerOpaque=(code,locals=[],indexed=[],action=null)=>{
   const ctx=action?.context??(context??=nameAllocator(ir.source+legacy)('regionContext'));
   const read=slot=>()=>ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(ctx),'read'),undefined,[ts.factory.createNumericLiteral(slot)]);

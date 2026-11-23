@@ -127,12 +127,12 @@ const later = `component Later(step: number, keep: (read: () => string, write: (
 async function mountLater(t, region) {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'elnor-region-later-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
-  // A disposal hook keeps the same component on the general renderer.
-  const source = region ? later : later.replace('  action go() {', '  on dispose() => void 0\n  action go() {');
+  // regionBackend: false builds the same component with the general renderer.
+  const source = later;
   const file = path.join(directory, 'Later.eln');
   fs.writeFileSync(file, source);
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: region});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   assert.equal(/region-runtime/.test(output), region);
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));
@@ -189,12 +189,11 @@ component Parent() {
 async function reopen(t, region) {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'elnor-region-reopen-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
-  const general = source => source.replace(/  state (\w+)/, '  on dispose() => void 0\n  state $1');
-  fs.writeFileSync(path.join(directory, 'Child.eln'), region ? child : general(child));
+  fs.writeFileSync(path.join(directory, 'Child.eln'), child);
   const file = path.join(directory, 'Parent.eln');
-  fs.writeFileSync(file, region ? parent : general(parent));
+  fs.writeFileSync(file, parent);
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: region});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   assert.equal(/region-runtime/.test(output), region);
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));

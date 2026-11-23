@@ -52,10 +52,10 @@ async function render(t, region) {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'elnor-region-semantic-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
   const file = path.join(directory, 'Page.eln');
-  // A disposal hook keeps the same component on the general renderer.
-  fs.writeFileSync(file, region ? page : page.replace('  state count', '  on dispose() => void 0\n  state count'));
+  // regionBackend: false builds the same component with the general renderer.
+  fs.writeFileSync(file, page);
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: region});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   assert.equal(/region-runtime/.test(output), region);
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));

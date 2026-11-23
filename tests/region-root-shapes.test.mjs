@@ -74,19 +74,17 @@ function serialize(node) {
   return `<${node.tag}${node.className ? ` class="${node.className}"` : ''}${value}>${node._text ?? ''}${inner}</${node.tag}>`;
 }
 
-// A disposal hook keeps the same component on the general renderer.
-const general = source => source.replace(/\n  state /, '\n  on dispose() => void 0\n  state ');
 
 async function render(t, body, {region, inlined}) {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'elnor-region-roots-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
-  const variant = source => region ? source : general(source);
   fs.writeFileSync(path.join(directory, 'Badge.eln'), badge);
-  fs.writeFileSync(path.join(directory, 'Leaf.eln'), variant(leaf(body)));
-  fs.writeFileSync(path.join(directory, 'Parent.eln'), variant(parent));
+  fs.writeFileSync(path.join(directory, 'Leaf.eln'), leaf(body));
+  fs.writeFileSync(path.join(directory, 'Parent.eln'), parent);
   const file = path.join(directory, inlined ? 'Parent.eln' : 'Leaf.eln');
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  // regionBackend: false builds the same components with the general renderer.
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: region});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));
   setupDOM();

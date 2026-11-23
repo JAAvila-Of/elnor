@@ -4,7 +4,7 @@ const ts=getTs(),parse=code=>{const sf=ts.createSourceFile('region.ts',`(${code}
 const binary=new Map([[ts.SyntaxKind.PlusToken,'+'],[ts.SyntaxKind.MinusToken,'-'],[ts.SyntaxKind.AsteriskToken,'*'],[ts.SyntaxKind.SlashToken,'/'],[ts.SyntaxKind.PercentToken,'%'],[ts.SyntaxKind.EqualsEqualsEqualsToken,'==='],[ts.SyntaxKind.ExclamationEqualsEqualsToken,'!=='],[ts.SyntaxKind.LessThanToken,'<'],[ts.SyntaxKind.GreaterThanToken,'>'],[ts.SyntaxKind.AmpersandAmpersandToken,'&&'],[ts.SyntaxKind.BarBarToken,'||'],[ts.SyntaxKind.QuestionQuestionToken,'??']]);
 function primitive(n){return n&&(ts.isStringLiteral(n)||ts.isNumericLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n)||[ts.SyntaxKind.TrueKeyword,ts.SyntaxKind.FalseKeyword,ts.SyntaxKind.NullKeyword].includes(n.kind));}
 function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSequential=false,primitiveProps=false,ancestry=new Set(),sequentialCache=new Map()}={}){
- const reject=reason=>{throw reason;},nodes=[],bindings=[],events=[],actions=[],actionParameters=[],actionContexts=[],actionDefaults=[],states=[],derived=[],branches=[],lists=[],composed=[],ops=[],groups=[{parent:null}],tasks=[],observed=[],instances=[],stack=new Set(ancestry);let group=0,opaqueCount=0;
+ const reject=reason=>{throw reason;},nodes=[],bindings=[],events=[],actions=[],disposals=[],actionParameters=[],actionContexts=[],actionDefaults=[],states=[],derived=[],branches=[],lists=[],composed=[],ops=[],groups=[{parent:null}],tasks=[],observed=[],instances=[],stack=new Set(ancestry);let group=0,opaqueCount=0;
  function closedArray(n){
   if(!n||!ts.isArrayLiteralExpression(n))reject('collection-provenance-not-closed');let shape=null;
   const scalar=v=>primitive(v)||(ts.isPrefixUnaryExpression(v)&&[ts.SyntaxKind.PlusToken,ts.SyntaxKind.MinusToken,ts.SyntaxKind.ExclamationToken,ts.SyntaxKind.TildeToken].includes(v.operator)&&scalar(v.operand));
@@ -21,7 +21,7 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
   if(ir.params.length&&!sequential)reject('external-root-props');
   function component(own,parent,props=new Map(),parentInstance=null){
    if(own.actionGroups.length)reject('action-group-runtime');
-   if(own.disposal)reject('component-disposal-not-proven');
+   if(own.disposal&&!sequential)reject('component-disposal-not-proven');
    const key=sourceKey(own.filename);if(stack.has(key))reject('recursive-component-graph');if(stack.size>=64||instances.length>=512)reject('composition-expansion-budget');stack.add(key);
    if((!sequential&&own.events.length)||own.slots.length||(!sequential&&own.imports.some(i=>!i.typeOnly&&!i.path.endsWith('.eln'))))reject('component-boundary-not-proven');
    if(own.params.some(p=>!props.has(p.name)))reject('unproven-child-prop');
@@ -100,7 +100,9 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
    // with any call between actions lowers all of its actions this way.
    const actionBase=actions.length,actionIndex=new Map(own.actions.map((a,i)=>[a.name,actionBase+i]));
    const referencesAction=fn=>{let found=false;const scan=n=>{if(ts.isIdentifier(n)&&actionIndex.has(n.text)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n))found=true;}if(!found)ts.forEachChild(n,scan);};scan(fn);return found;};
-   const callsBetween=own.actions.some(a=>referencesAction(ts.createSourceFile('action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)));
+   // on dispose runs as a general action body registered with the instance.
+   const disposalSource=own.disposal?ts.createSourceFile('dispose.ts',`function dispose() { void (${own.disposal.expr}); }`,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS):null;
+   const callsBetween=own.actions.some(a=>referencesAction(ts.createSourceFile('action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)))||(!!disposalSource&&referencesAction(disposalSource));
    const instanceSlot=[...slots.values(),...calcSlots.values()][0]??-1;
    function opaqueAction(fn){
     const calls=new Set();let invalid=null;
@@ -204,13 +206,14 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }
     reject('structural-or-opaque-node:'+n.kind);
    }
+   if(disposalSource){disposals.push(opaqueAction(disposalSource.statements[0]));ops.push({kind:'dispose',index:disposals.length-1,group});}
    for(const root of own.ui)visit(root,parent);stack.delete(key);
   }
   component(ir,-1,sequential?new Map(ir.params.map(p=>[p.name,primitiveProps?{code:`r.props[${JSON.stringify(p.name)}]`,dependencies:new Set(),dynamic:true}:{opaque:true,code:null,dependencies:new Set()}])):new Map());
   if(sequential&&!allowClosedSequential&&!opaqueCount)reject('sequential-opaque-read-required');
   groups.forEach((g,id)=>{g.nodes=nodes.flatMap((n,i)=>n.group===id?[i]:[]);g.slots=states.flatMap((s,i)=>s.group===id?[i]:[]);g.tasks=tasks.flatMap((t,i)=>t.group===id?[i]:[]);g.events=events.flatMap((e,i)=>e.group===id?[i]:[]);g.initialDependencies=[...new Set(states.filter(s=>s.group===id&&s.kind!=='calc').flatMap(s=>s.dependencies))];});
-  if(sequential){for(const t of tasks)if(t.kind!=='calc')t.dynamic=true;groups.forEach((g,id)=>{g.ops=ops.flatMap((op,i)=>{const owner=op.kind==='component'?op.group:op.task!==undefined?tasks[op.task].group:op.event!==undefined?events[op.event].group:nodes[op.kind==='input'?op.label:op.node].group;return owner===id?[i]:[];});});}
-  return {kind:'elnor-owned-region-v17',mode:sequential?'sequential':'blueprint',eligible:true,file:ir.filename,states,derived,branches,lists,components:composed,groups,tasks,nodes,ops,bindings,events,emitNames:ir.events.map(e=>e.name),actions,actionParameters,actionContexts,actionDefaults,observed,instances,failures:[]};
+  if(sequential){for(const t of tasks)if(t.kind!=='calc')t.dynamic=true;groups.forEach((g,id)=>{g.ops=ops.flatMap((op,i)=>{const owner=op.kind==='component'||op.kind==='dispose'?op.group:op.task!==undefined?tasks[op.task].group:op.event!==undefined?events[op.event].group:nodes[op.kind==='input'?op.label:op.node].group;return owner===id?[i]:[];});});}
+  return {kind:'elnor-owned-region-v17',mode:sequential?'sequential':'blueprint',eligible:true,file:ir.filename,states,disposals,derived,branches,lists,components:composed,groups,tasks,nodes,ops,bindings,events,emitNames:ir.events.map(e=>e.name),actions,actionParameters,actionContexts,actionDefaults,observed,instances,failures:[]};
  }catch(reason){if(typeof reason!=='string')throw reason;return {kind:'elnor-owned-region-v17',eligible:false,file:ir.filename,failures:[reason]};}
 }
 
@@ -246,7 +249,7 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const derivedCode=d=>{const lowered=d.opaque?options.lowerOpaque(d.opaque,d.locals,indexed):{param:'r',read:d.read};return `{slot:${d.slot},masks:${JSON.stringify(d.masks)},read:${lowered.param}=>(${lowered.read})}`;};
  const componentAliases=new Map(),componentImports=[];for(const c of plan.components??[]){if(!componentAliases.has(c.import)){const alias=fresh('__elnor_childRegion'+componentAliases.size);componentAliases.set(c.import,alias);const target=options.componentImports?.get(c.import);if(!target)throw Error('ELN-REGION: child module mapping missing');componentImports.push(`import {__elnor_renderRegion as ${alias}} from ${JSON.stringify(target)};`);}}
  const bridge=(plan.emitNames?.length??0)||(plan.components??[]).some(c=>c.handlers?.length),anchor=bridge?options.lowerOpaque('0',[],indexed).param:null;
- const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))||plan.actions.some(a=>a?.kind==='opaque-action'&&a.calls.length)?fresh(anchor+'_actions'):null;
+ const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))||[...plan.actions,...(plan.disposals??[])].some(a=>a?.kind==='opaque-action'&&a.calls.length)?fresh(anchor+'_actions'):null;
  const handlerFactory=c=>{const param=anchor+'_handler',alive=param+'_alive',args=param+'_args',values=param+'_values';return `(${param},${alive})=>({${c.handlers.map(h=>{const call=h.call,reads=call.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:call.parameters}).read);const run=call.kind==='action'?`const ${values}=[${reads.join(',')}];if(!${alive}())return;${actionTable}[${call.action}](${param},...${values});`:`${param}.emit[${JSON.stringify(call.name)}](${reads.join(',')});`;return `${JSON.stringify(h.name)}:(...${args})=>{if(!${alive}())return;${run}}`;}).join(',')}})`;};
  const emitFactory=plan.emitNames?.length?`${anchor}_packet=>({${plan.emitNames.map(name=>`${JSON.stringify(name)}:(...${anchor}_args)=>${anchor}_packet[${JSON.stringify(name)}]?.(...${anchor}_args)`).join(',')}})`:null;
  const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
@@ -266,7 +269,7 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const forwarding=l=>{const group=plan.groups[l.child],op=group.ops?.length===1?plan.ops[group.ops[0]]:null;return plan.mode==='sequential'&&group.slots.length===1&&group.slots[0]===l.itemSlot&&!group.tasks.length&&!group.nodes.length&&!group.events.length&&op?.kind==='component'&&plan.components[op.index].parent<0?`,forward:${op.index}`:'';};
  const listCode=l=>`{${forwarding(l).slice(1)}${forwarding(l)?',':''}node:${l.node},parent:${l.parent},exclusive:${JSON.stringify(l.exclusive)},nativeRows:${JSON.stringify(l.nativeRows)},child:${l.child},detached:${JSON.stringify(l.detached??true)},itemSlot:${l.itemSlot},read:${readCode(l.readOpaque??l.read)},key:${readCode(l.keyOpaque??l.key)}}`;
  const actionArray=`[${plan.actions.map(actionCode).join(',')}]`;
- const data=`{indexedReads:true,${emitFactory?'emitFactory:'+emitFactory+',':''}${plan.states.some(s=>s.initialTask!==undefined)?'initialTasks:'+JSON.stringify(plan.states.map(s=>s.initialTask??null))+',':''}invalidations:${JSON.stringify(invalidations?.map(m=>[...m])??null)},mode:${JSON.stringify(plan.mode)},components:[${(plan.components??[]).map(componentCode).join(',')}],ops:${plan.mode==='sequential'?JSON.stringify(plan.ops):'null'},names:null,nodes:[${nodeCode}],initializers:[${plan.states.map(initializerCode).join(',')}],observed:${JSON.stringify(plan.observed)},groups:${JSON.stringify(plan.groups)},branches:[${plan.branches.map(branchCode).join(',')}],lists:[${plan.lists.map(listCode).join(',')}],tasks:${plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential'?JSON.stringify(plan.tasks):'null'},derived:[${plan.derived.map(derivedCode).join(',')}],bindings:[${plan.bindings.map(bindingCode).join(',')}],events:[${plan.events.map(event=>{const {args,...data}=event;return args?`${JSON.stringify(data).slice(0,-1)},args:[${args.map(readCode).join(',')}]}`:JSON.stringify(data);}).join(',')}],actions:${actionTable??actionArray}}`;
+ const data=`{indexedReads:true,${emitFactory?'emitFactory:'+emitFactory+',':''}${plan.states.some(s=>s.initialTask!==undefined)?'initialTasks:'+JSON.stringify(plan.states.map(s=>s.initialTask??null))+',':''}invalidations:${JSON.stringify(invalidations?.map(m=>[...m])??null)},mode:${JSON.stringify(plan.mode)},components:[${(plan.components??[]).map(componentCode).join(',')}],ops:${plan.mode==='sequential'?JSON.stringify(plan.ops):'null'},names:null,nodes:[${nodeCode}],initializers:[${plan.states.map(initializerCode).join(',')}],observed:${JSON.stringify(plan.observed)},groups:${JSON.stringify(plan.groups)},branches:[${plan.branches.map(branchCode).join(',')}],lists:[${plan.lists.map(listCode).join(',')}],tasks:${plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential'?JSON.stringify(plan.tasks):'null'},derived:[${plan.derived.map(derivedCode).join(',')}],bindings:[${plan.bindings.map(bindingCode).join(',')}],events:[${plan.events.map(event=>{const {args,...data}=event;return args?`${JSON.stringify(data).slice(0,-1)},args:[${args.map(readCode).join(',')}]}`:JSON.stringify(data);}).join(',')}],actions:${actionTable??actionArray},disposals:[${(plan.disposals??[]).map(hook=>options.lowerOpaqueAction(hook,{instance:instanceAlias??=fresh('__elnor_regionInstance'),table:actionTable})).join(',')}]}`;
  return {data,imports:componentImports.join('\n')+(actionTable?`\nconst ${actionTable}=${actionArray};`:'')
   +(instanceAlias?`\nimport {regionInstance as ${instanceAlias}} from ${JSON.stringify(options.regionRuntimeImport)};`:'')};
 }
@@ -281,7 +284,7 @@ function appendOwnedRegion(ir,legacy,options){
 
 // Select from the validated IR, without imposing new Surface restrictions.
 function nativeOwnedBuilder(plan,fresh){
- if(plan.mode!=='sequential'||plan.states.length||plan.derived.length||plan.actions.length||plan.branches.length||plan.lists.length||plan.components.length||plan.groups.length!==1)return null;
+ if(plan.mode!=='sequential'||plan.states.length||plan.derived.length||plan.actions.length||plan.disposals?.length||plan.branches.length||plan.lists.length||plan.components.length||plan.groups.length!==1)return null;
  if(plan.tasks.some(t=>t.kind!=='binding'||!t.dynamic)||plan.bindings.some(b=>!['text','class','disabled','ariaBoolean'].includes(b.kind))||plan.events.some(e=>e.emit===undefined)||plan.ops.some(op=>!['node','literal','task','event'].includes(op.kind)))return null;
  const name=fresh('__elnor_nativeBuild'),frame=fresh('__elnor_nativeFrame'),parent=fresh('__elnor_nativeParent'),task=fresh('__elnor_nativeTask'),event=fresh('__elnor_nativeEvent'),doc=fresh('__elnor_nativeDocument'),part=fresh('__elnor_nativePart');
  const body=[];

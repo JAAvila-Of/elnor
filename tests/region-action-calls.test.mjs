@@ -74,13 +74,12 @@ function serialize(node) {
 async function run(t, region) {
   const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'elnor-region-calls-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
-  // A disposal hook keeps the same components on the general renderer.
-  const general = source => source.replace(/\n  state /, '\n  on dispose() => void 0\n  state ');
-  fs.writeFileSync(path.join(directory, 'Counter.eln'), region ? child : general(child));
+  // regionBackend: false builds the same components with the general renderer.
+  fs.writeFileSync(path.join(directory, 'Counter.eln'), child);
   const file = path.join(directory, 'Parent.eln');
-  fs.writeFileSync(file, region ? parent : general(parent));
+  fs.writeFileSync(file, parent);
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: region});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   assert.equal(/region-runtime/.test(output), region);
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));

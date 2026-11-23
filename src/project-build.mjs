@@ -45,7 +45,7 @@ function inspectOutput(output,entryKey){
   return {owner,snapshot};
 }
 
-export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency,captureProps=false,hot=false}={}){
+export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency,captureProps=false,hot=false,regionBackend=true}={}){
   if(typeof outputDir!=='string'||!outputDir||typeof checkOutputDir!=='string'||!checkOutputDir)
     throw Error('Explicit project output and generated check directories are required');
   const output=path.resolve(outputDir),cache=path.resolve(checkOutputDir);
@@ -62,7 +62,7 @@ export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency
   const validateProps=captureProps?createPreviewPropsValidator(checkedProgram,entry):undefined;
 
   // Plan and emit entirely in the caller-owned scratch area before output adoption.
-  const buildId=randomUUID(),stage=path.join(cache,'emit-'+buildId),emitted=emitGraph(checked.graph,stage,{hotEntry:hot?entryKey:undefined});
+  const buildId=randomUUID(),stage=path.join(cache,'emit-'+buildId),emitted=emitGraph(checked.graph,stage,{hotEntry:hot?entryKey:undefined,regionBackend});
   const main=emitted.components.find(component=>sourceKey(component.source)===entryKey);
   if(!main)throw Error('ELN-PROJECT-ENTRY: Entry is missing from emitted components');
   const current=inspectOutput(output,entryKey);

@@ -80,7 +80,10 @@ function createRegionInstance(owner,part,props){
  const instance={[regionInstanceMark]:true,props,
   cell(slot){
    let cell=cells.get(slot);
-   if(!cell)cells.set(slot,cell={get value(){return frozen?frozen.get(slot):owner.read(slot);},set value(next){if(frozen)frozen.set(slot,next);else owner.write(slot,next);}});
+   // While the owner is being disposed and before the handle freezes, an
+   // on dispose hook still reads and writes the live values directly.
+   if(!cell)cells.set(slot,cell={get value(){return frozen?frozen.get(slot):owner.disposed?owner.values[slot]:owner.read(slot);},
+    set value(next){if(frozen)frozen.set(slot,next);else if(owner.disposed)owner.values[slot]=next;else owner.write(slot,next);}});
    return cell;
   },
   action(table,index){
@@ -189,7 +192,7 @@ function mountTaskRegion(target,plan,config={}){
   const clearTask=id=>{if(plan.mode==='sequential')cancelRegionJob(region.handles[id]);unsubscribe(id);if(plan.mode==='sequential'){if(plan.tasks[id].dynamic)region.handles[id]?.dispose();}else{region.reactions[id]?.dispose();region.reactions[id]=null;}if(region.pending.get(id)===part)region.pending.delete(id);};
   const clearEvent=resource=>{try{resource.node.removeEventListener(resource.type,resource.listener);}finally{resource.node=null;}};
   const clearBranch=c=>{const errorsFound=[];try{disposeGroup(c.child);}catch(error){errorsFound.push(error);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(error){errorsFound.push(error);}errors(errorsFound,'Multiple conditional cleanup failures');};
-  if(part.cleanups){for(let i=part.cleanups.length-1;i>=0;i--)try{const c=part.cleanups[i];if(runtimeComponents&&c.component){const dispose=c.component.dispose;if(runtimeEmits)c.component.active=false;c.component.dispose=null;dispose?.();}else if(runtimeLists&&c.list!==undefined){const found=[];try{resetList(c.list,true);}catch(e){found.push(e);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(e){found.push(e);}errors(found,'Multiple list cleanup failures');}else if(c.child!==undefined)clearBranch(c);else if(c.task!==undefined)clearTask(c.task);else clearEvent(c.resource);}catch(error){failures.push(error);}part.cleanups.length=0;}
+  if(part.cleanups){for(let i=part.cleanups.length-1;i>=0;i--)try{const c=part.cleanups[i];if(runtimeComponents&&c.component){const dispose=c.component.dispose;if(runtimeEmits)c.component.active=false;c.component.dispose=null;dispose?.();}else if(runtimeLists&&c.list!==undefined){const found=[];try{resetList(c.list,true);}catch(e){found.push(e);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(e){found.push(e);}errors(found,'Multiple list cleanup failures');}else if(c.child!==undefined)clearBranch(c);else if(c.task!==undefined)clearTask(c.task);else if(c.dispose!==undefined){const hook=c.dispose;c.dispose=undefined;hook();}else clearEvent(c.resource);}catch(error){failures.push(error);}part.cleanups.length=0;}
   else{for(const id of plan.groups[group].tasks)clearTask(id);for(let i=part.resources.length-1;i>=0;i--)try{clearEvent(part.resources[i]);}catch(error){failures.push(error);}}
   if(runtimeBlueprint&&plan.mode!=='sequential')for(const node of part.roots)try{node.remove();}catch(error){failures.push(error);}
   else if((!runtimeLists||!bulkDepth)&&!(runtimeLists&&group===entry&&keepEntryRoot)&&(group!==entry||config.detached||config.rowFragment)){const owned=part.domNodes??(config.detached?part.roots:null)??[...(part.fragment?.childNodes??[])];for(const node of owned)try{node.remove();}catch(error){failures.push(error);}}
@@ -249,6 +252,7 @@ function mountTaskRegion(target,plan,config={}){
    else if(op.kind==='literal'){const node=region.refs[op.node],value=String(plan.nodes[op.node].value??'');if(node.nodeValue!==value)node.nodeValue=value;}
    else if(op.kind==='task')task(op.task);
    else if(op.kind==='event')event(op.event);
+   else if(op.kind==='dispose'){const hook=plan.disposals[op.index],instance=part.instance??=createRegionInstance(region,part,region.props);part.cleanups.push({dispose:()=>hook(instance)});}
    else if(runtimeLists&&op.kind==='list'){part.cleanups.push({list:op.index,node:op.node});task(op.task);}
    else if(op.kind==='branch'){part.cleanups.push({child:op.child,node:op.node});task(op.task);}
    else if(runtimeComponents&&op.kind==='component'){const spec=plan.components[op.index],props={};for(const p of spec.props)Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(region)});const resource={dispose:null};if(runtimeEmits)resource.active=true;const handlers=runtimeEmits&&spec.handlerFactory?spec.handlerFactory(region,()=>resource.active&&part.active&&!region.disposed):undefined;let childFrame=null;part.cleanups.push({component:resource});const childStage=(frame,dispose)=>{childFrame=frame;resource.dispose=dispose;if(region.disposed||!part.active){if(runtimeEmits)resource.active=false;resource.dispose=null;dispose();}};const host=spec.parent<0?parent:region.refs[spec.parent];if(runtimeEmits&&spec.handlerFactory)spec.render(host,props,childStage,handlers);else spec.render(host,props,childStage);if(spec.parent<0&&part.active&&!region.disposed)part.roots.push(...(childFrame?.parts?.[0]?.roots??[]));childFrame=null;}

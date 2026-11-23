@@ -107,3 +107,21 @@ The 19 components under `examples/` select the same backend as before. Each
 of them is rejected first by another rule, such as `on dispose`, a root with
 more than one container, opaque state, slot or event boundaries, or calls
 between actions.
+
+## Disposal hooks
+
+`on dispose` no longer sends a component to the general renderer when the
+component uses a sequential region. The hook expression is lowered like a
+general action body and registered as a cleanup of its instance's part at the
+point where the general renderer registers it: after state, calcs and actions,
+before the UI. Cleanups run in reverse registration order, so a child's hook
+runs before its parent's and the UI cleanups of an instance run before its own
+hook. The hook runs with the instance handle, reads and writes the live state,
+and the handle freezes afterwards. A throwing hook does not skip the other
+cleanups, and the failures are reported together as in the general renderer.
+
+`tests/region-disposal-hooks.test.mjs` compares the hook order, the state read
+and written by hooks, hooks that call actions and a throwing hook at unmount
+with the general renderer. The comparison builds the same components with
+`buildSurfaceProject(entry, {regionBackend: false})`, which compiles every
+component with the general renderer.

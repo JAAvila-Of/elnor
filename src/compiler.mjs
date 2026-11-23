@@ -443,11 +443,13 @@ function hotExperiment(ir,plan,sources){
   owners.sort((left,right)=>left.name<right.name?-1:left.name>right.name?1:0);
   return {contract:hotContract([root,...owners.map(owner=>owner.leaf)],owners.map(owner=>owner.placement)),hotLists,childKeys};
 }
-function prepareGraph(graph,{hotEntry}={}){
+// regionBackend: false compiles every component with the general renderer,
+// the reference that region behavior is compared against.
+function prepareGraph(graph,{hotEntry,regionBackend=true}={}){
   const planner=createModulePlanner(),files=new Map(),records=surfaceRecords(graph),components=surfaceOutputs(records);
   const outputs=new Map(components.map(component=>[sourceKey(component.source),component]));
   const sources=new Map(records.map(ir=>[sourceKey(ir.filename),ir]));
-  const regionPlans=new Map(records.map(ir=>[sourceKey(ir.filename),analyzeRegion(ir,{components:sources})])),ownedPlans=new Map(),required=new Set();
+  const regionPlans=new Map(records.map(ir=>[sourceKey(ir.filename),regionBackend?analyzeRegion(ir,{components:sources}):{eligible:false,failures:['region-backend-disabled']}])),ownedPlans=new Map(),required=new Set();
   const requireChildren=plan=>{for(const c of plan.components??[]){const key=sourceKey(c.source);if(required.has(key))continue;required.add(key);const child=analyzeSequentialRegion(sources.get(key),{components:sources});if(!child.eligible)throw Error('ELN-REGION: owned child proof missing');ownedPlans.set(key,child);requireChildren(child);}};for(const plan of regionPlans.values())if(plan.eligible&&plan.mode==='sequential')requireChildren(plan);
   function planImports(ir){
     const moduleImports=new Map(),paths=runtimeModulePaths(projectSurface(ir.source,ir.filename));

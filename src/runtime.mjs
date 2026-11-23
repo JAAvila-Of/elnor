@@ -554,22 +554,25 @@ export function button(parent,read,run,owner){
   ownNative(owner,()=>node.removeEventListener('click',run));
   return node;
 }
+// Shared by both renderers: focus the first enabled invalid field of a form
+// once pending reactive work, including field error bindings, has run.
+export function focusInvalidWhenSettled(node,current){
+  if (!current() || !node.isConnected) return;
+  // A validation calc may schedule its field binding in a later batch.
+  if (scheduled) {
+    queueMicrotask(() => focusInvalidWhenSettled(node,current));
+    return;
+  }
+  for (const field of node.elements) {
+    if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName) ||
+        field.getAttribute('aria-invalid') !== 'true' || field.matches(':disabled')) continue;
+    field.focus();
+    if (field.getRootNode().activeElement === field) break;
+  }
+}
 export function formBinding(node,run,owner,reset,readFocusInvalid){
   let active=true,submission=0;
-  function focusWhenSettled(attempt) {
-    if (!active || attempt !== submission || !node.isConnected) return;
-    // A validation calc may schedule its field binding in a later batch.
-    if (scheduled) {
-      queueMicrotask(() => focusWhenSettled(attempt));
-      return;
-    }
-    for (const field of node.elements) {
-      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName) ||
-          field.getAttribute('aria-invalid') !== 'true' || field.matches(':disabled')) continue;
-      field.focus();
-      if (field.getRootNode().activeElement === field) break;
-    }
-  }
+  const focusWhenSettled=attempt=>focusInvalidWhenSettled(node,()=>active&&attempt===submission);
   const listener=event=>{
     if(!active)return;
     event.preventDefault();
@@ -602,27 +605,32 @@ export function input(parent,label,read,write,owner){
   return node;
 }
 
+// Field error messages are shared by both renderers: one id sequence and one
+// way to describe the field, so the same component produces the same DOM.
 let fieldErrorId = 0;
-export function fieldErrorBinding(parent, field, read, owner) {
-  const message = element(parent, 'span');
-  const doc = field.ownerDocument;
+export function setupFieldErrorMessage(message, doc) {
   let id;
   do { id = 'elnor-field-error-' + ++fieldErrorId; } while (doc.getElementById?.(id));
   message.setAttribute('id', id);
   message.setAttribute('class', 'elnor-field-error');
   message.setAttribute('aria-live', 'polite');
-  effect(() => {
-    const value = read();
-    if (typeof value !== 'string') throw new TypeError('ELN-FIELD-ERROR-TYPE: expected a string');
-    if (value) {
-      if (field.getAttribute('aria-invalid') !== 'true') field.setAttribute('aria-invalid', 'true');
-      if (field.getAttribute('aria-describedby') !== id) field.setAttribute('aria-describedby', id);
-    } else {
-      if (field.getAttribute('aria-invalid') !== null) field.removeAttribute('aria-invalid');
-      if (field.getAttribute('aria-describedby') !== null) field.removeAttribute('aria-describedby');
-    }
-    if(message.textContent!==value)message.textContent = value;
-  }, owner);
+}
+export function setFieldError(field, message, value) {
+  if (typeof value !== 'string') throw new TypeError('ELN-FIELD-ERROR-TYPE: expected a string');
+  const id = message.getAttribute('id');
+  if (value) {
+    if (field.getAttribute('aria-invalid') !== 'true') field.setAttribute('aria-invalid', 'true');
+    if (field.getAttribute('aria-describedby') !== id) field.setAttribute('aria-describedby', id);
+  } else {
+    if (field.getAttribute('aria-invalid') !== null) field.removeAttribute('aria-invalid');
+    if (field.getAttribute('aria-describedby') !== null) field.removeAttribute('aria-describedby');
+  }
+  if(message.textContent!==value)message.textContent = value;
+}
+export function fieldErrorBinding(parent, field, read, owner) {
+  const message = element(parent, 'span');
+  setupFieldErrorMessage(message, field.ownerDocument);
+  effect(() => setFieldError(field, message, read()), owner);
 }
 // Kept separate so existing input construction and its hot path stay intact.
 export function setChecked(node,value){if(typeof value!=='boolean')throw new TypeError('ELN-CHECKED-TYPE: checkbox binding must be a boolean');if(node.checked!==value)node.checked=value;}

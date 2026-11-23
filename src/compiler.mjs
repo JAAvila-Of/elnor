@@ -354,12 +354,42 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
 export function generate(ir,options={}){
  const legacy=generateLegacy(ir,options);let context;
  if(options.hot||ir.actionGroups.length)return legacy;
- const lowerOpaque=(code,locals=[],indexed=[],action=null)=>{
+ // Region code is appended to the general module, which already declares
+ // the TypeScript downlevel helpers its own bodies need, such as
+ // __addDisposableResource for using. A lowered expression drops those helper
+ // statements only when the module declares them.
+ const loweredExpression=(js,name,message)=>{
+  const sf=ts.createSourceFile(name,js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const helper=st=>ts.isVariableStatement(st)&&st.declarationList.declarations.every(d=>ts.isIdentifier(d.name)&&/^__[A-Za-z]+$/.test(d.name.text)&&new RegExp(`\\b${d.name.text}\\b\\s*=`).test(legacy));
+  const statements=sf.statements.filter(st=>!helper(st));
+  if(statements.length!==1||!ts.isExpressionStatement(statements[0]))throw Error(message);
+  return statements[0].expression.getText(sf);
+ };
+ const lowerOpaque=(code,locals=[],indexed=[],action=null,closure=null)=>{
   const ctx=action?.context??(context??=nameAllocator(ir.source+legacy)('regionContext'));
+  if(closure)return lowerClosure(code,ctx,action,closure);
   const read=slot=>()=>ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(ctx),'read'),undefined,[ts.factory.createNumericLiteral(slot)]);
   const indexedReads=new Map(indexed.map(([name,slot])=>[name,read(slot)]));
-  const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('opaque.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
-  if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: opaque expression lowering failed');return {param:ctx,read:sf.statements[0].expression.getText(sf)};
+  const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return {param:ctx,read:loweredExpression(js,'opaque.js','ELN-REGION: opaque expression lowering failed')};
+ };
+ // An expression that creates functions reads each slot through the handle
+ // of the part that owns it, a row for row items and the component instance
+ // for state and calcs. Reads stay tracked while the part is open; a closure
+ // that runs after the part closes reads the frozen values, as general cells.
+ const lowerClosure=(code,ctx,action,closure)=>{
+  const fresh=nameAllocator(ir.source+legacy+code),props=fresh('closureProps');
+  const cells=closure.slots.filter(([name])=>code.includes(name)).map(([name,slot,group])=>[name,slot,group,fresh(`cell_${name}`)]);
+  const usesProps=closure.props.some(name=>code.includes(name));
+  const decls=[...(usesProps?[`const ${props} = ${closure.alias}(${ctx}, ${closure.instance.slot}, ${closure.instance.group}).props;`]:[]),
+   ...cells.map(([,slot,group,cell])=>`const ${cell} = ${closure.alias}(${ctx}, ${slot}, ${group}).cell(${slot});`)];
+  const calls=(closure.calls??[]).filter(([name])=>code.includes(name)).map(([name,index])=>[name,index,fresh(`action_${name}`)]);
+  decls.push(...calls.map(([,index,reference])=>`const ${reference} = ${closure.alias}(${ctx}, ${closure.instance.slot}, ${closure.instance.group}).action(${closure.table}, ${index});`));
+  const map=new Map([...closure.props.map(name=>[name,`${props}.${name}`]),...cells.map(([name,,,cell])=>[name,`${cell}.value`]),...calls.map(([name,,reference])=>[name,reference]),
+   ...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]);
+  const rewritten=rewrite({params:[],states:[],calcs:[]},`(() => {\n${decls.join('\n')}\nreturn (${code});\n})()`,map,'expression',{emit:`${ctx}.emit`});
+  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return {param:ctx,read:loweredExpression(js,'closure.js','ELN-REGION: closure expression lowering failed')};
  };
  // A general action keeps its body and runs against the instance handle of
  // the region runtime. States and calcs become accessors of that handle, other
@@ -383,9 +413,8 @@ export function generate(ir,options={}){
    ...calls.map(([,index,reference])=>`const ${reference} = ${handle}.action(${table}, ${index});`)];
   const code=`${action.async?'async ':''}(${[ctx,...(action.params?[action.params]:[])].join(', ')}) => {\n${cells.join('\n')}\n${action.body.slice(1,-1)}\n}`;
   const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${handle}.emit`});
-  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('action.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
-  if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: general action lowering failed');
-  return sf.statements[0].expression.getText(sf);
+  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return loweredExpression(js,'action.js','ELN-REGION: general action lowering failed');
  };
  const mounted=attachRegion(ir,legacy,{...options,lowerOpaque,lowerOpaqueAction});return options.ownedRegionPlan?attachRegion(ir,mounted,{...options,lowerOpaque,lowerOpaqueAction,regionPlan:options.ownedRegionPlan,ownedExport:true}):mounted;
 }

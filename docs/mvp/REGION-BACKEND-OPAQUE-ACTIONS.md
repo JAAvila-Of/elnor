@@ -174,3 +174,34 @@ parent action or assign parent state. A handler that reads a row item of an
 `tests/region-action-emits.test.mjs` compares emits while mounted, after an
 `await`, before other statements, after the child's branch closes and after
 unmount with the general renderer.
+
+## Functions in expressions
+
+A UI expression, calc, state initializer, event argument or child prop may
+create arrow functions and function expressions, use `new`, and assign its own
+variables inside those functions. It may not assign component state, props or
+row items, and it keeps fallback for classes, `this`, `delete`, `await` and
+`yield`. It may also call or pass the component's actions, and call a function
+stored in state.
+
+A function created by an expression can outlive it, for example when a library
+keeps a callback. Such an expression reads each slot through the instance
+handle of the part that owns it: the row for row items and the component
+instance for state and calcs. Reads stay tracked while the part is open. A
+closure that runs after its row was removed or the component unmounted reads
+the frozen values, as general-renderer cells do. Actions referenced from these
+expressions are the handle's stable references, so every action of the
+component takes the general path. Expressions without functions keep their
+direct lowering.
+
+The region code is appended to the general module, which already declares the
+TypeScript downlevel helpers its bodies need, such as `__addDisposableResource`
+for `using`. A lowered body drops those helper declarations only when the
+module declares them.
+
+`tests/region-expression-closures.test.mjs` compares `filter`, `map`, `sort`,
+`reduce` and `new` in text, calcs and initializers, closures over the outer row
+of nested lists, a function prop, an escaping closure read after its row is
+removed and after unmount, actions used from calcs, initializers and
+expressions, and bodies with `using` and `await using` with the general
+renderer.

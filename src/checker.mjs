@@ -9,7 +9,7 @@ import {sourceKey,sourceHash,surfaceRecords,sourcePath,sourceImport,logicalKey} 
 import {observeFileHost} from './observed-host.mjs';
 import {actionFunctionPrefix, guardCallChecks, guardCallConflicts, guardedBodyOffset} from './action-guards.mjs';
 import {projectReactiveState} from './language-projection.mjs';
-import {managedActionNames, managedActionType} from './action-groups.mjs';
+import {actionGroupType, managedActionNames, managedActionType, memberGroupType} from './action-groups.mjs';
 const ts=getTs();
 const normalize=s=>s.replaceAll('\\','/');
 function importsFor(ir){
@@ -31,7 +31,7 @@ export function virtualCheckSource(ir){
   projectReactiveState(ir.states,text=>{reactiveState+=text;},state=>{reactiveState+=state.name;});
   if(reactiveState)add(reactiveState.trimEnd(),1);
   for(const calc of ir.calcs)add(`const ${calc.name} = (${calc.expr});`,calc.line,1);
-  for(const group of ir.actionGroups)add(`const ${group.name} = {} as {readonly pending: boolean}; void (${group.owner});`,group.line);
+  for(const group of ir.actionGroups)add(`const ${group.name} = {} as ${actionGroupType}; void (${group.owner});`,group.line);
   if(ir.events.length){
     add(`const emit: {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>`${p.name}: ${p.type}`).join(', ')}) => void`).join(';')}} = {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>p.name).join(', ')}) => {}`).join(',')}};`,ir.events[0].line);
   } else add('const emit = {};',1);
@@ -44,9 +44,12 @@ export function virtualCheckSource(ir){
       action={...authored,name:implementation};
       action.functionSource=actionFunctionPrefix(action)+authored.functionSource.slice(actionFunctionPrefix(authored).length);
     }
-    const start=generatedOffset;
+    // A member sees its own group with the signal of its invocation.
+    const shadowed=implementation&&ir.actionGroups.some(group=>group.name===authored.group);
+    const prefix=shadowed?`const ${implementation} = (() => { const ${authored.group} = {} as ${memberGroupType}; return `:'';
+    const start=generatedOffset+prefix.length;
     if(action.bodySegments)guardChecks.push(...guardCallChecks(action,start+actionFunctionPrefix(action).length));
-    add(action.functionSource,action.line);
+    add(prefix+action.functionSource+(shadowed?'; })();':''),action.line);
     actionMappings.push({start,end:start+action.functionSource.length,action});
   }
   if(ir.disposal)add(`(() => { ((__elnor_result: void) => {})(${ir.disposal.expr}); });`,ir.disposal.line);

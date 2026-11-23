@@ -1,5 +1,9 @@
 export const actionGroupPolicies = ['single-flight', 'latest'];
 
+// A member of the group also reads the AbortSignal of its own invocation.
+export const actionGroupType = '{readonly pending: boolean}';
+export const memberGroupType = '{readonly pending: boolean; readonly signal: AbortSignal}';
+
 export function managedActionNames(ir) {
   const names = new Map();
   if (!ir.actions.some(action => action.groupSpan)) return names;

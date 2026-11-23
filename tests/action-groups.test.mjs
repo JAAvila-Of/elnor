@@ -902,3 +902,124 @@ test('stack traces name managed actions, their helpers and the driver',async t=>
   assert.match(failure,/\n\s+at async inspect \(/);
   assert.equal(name,'inspect');
 });
+
+const signalHostTypes = `export interface SignalHost {
+  capture(label: string, signal: AbortSignal): void;
+  wait(label: string): Promise<string>;
+  log(entry: string): void;
+}
+`;
+
+const signalComponent = `import type { SignalHost } from "./host.js";
+
+component Signals(host: SignalHost) {
+  state workspace = "A";
+  action group work(workspace) latest
+
+  action async load(label: string) in work {
+    host.capture(label, work.signal);
+    try {
+      return await host.wait(label);
+    } finally {
+      host.log(\`finally \${label} \${work.signal.aborted}\`);
+    }
+  }
+
+  action switchOwner() { workspace = workspace === "A" ? "B" : "A"; }
+
+  ui {
+    section {
+      p (work.pending ? "busy" : "idle")
+      button "First" => load("first")
+      button "Second" => load("second")
+      button "Switch" => switchOwner()
+    }
+  }
+}
+`;
+
+async function mountSignals(t) {
+  const {file,directory}=scope(t);
+  fs.writeFileSync(file,signalComponent);
+  fs.writeFileSync(path.join(directory,'host.ts'),signalHostTypes);
+  const outputDir=path.join(directory,'build');
+  const build=buildSurfaceProject(file,{outputDir,checkOutputDir:path.join(directory,'check')});
+  const module=await import(pathToFileURL(path.join(outputDir,build.entryOutput)));
+  setupDOM();
+  const root=new FakeNode('root'), signals=new Map(), gates=new Map(), log=[];
+  const unmount=module.mount(root,{host:{
+    capture(label,signal){signals.set(label,signal);},
+    wait(label){const gate=Promise.withResolvers();gates.set(label,gate);return gate.promise;},
+    log(entry){log.push(entry);}
+  }});
+  return {signals,gates,log,unmount,click:label=>findButton(root,label).click()};
+}
+
+test('changing the owner aborts the signal of the running invocation before its work settles',async t=>{
+  const view=await mountSignals(t);
+  t.after(view.unmount);
+  view.click('First');
+  const signal=view.signals.get('first');
+  assert.equal(signal.aborted,false);
+  view.click('Switch');
+  await flush();
+  assert.equal(signal.aborted,true);
+  assert.equal(signal.reason.name,'AbortError');
+  view.gates.get('first').resolve('late');
+  await flush();
+  assert.deepEqual(view.log,['finally first true']);
+});
+
+test('a superseding latest invocation aborts only the previous signal',async t=>{
+  const view=await mountSignals(t);
+  t.after(view.unmount);
+  view.click('First');
+  view.click('Second');
+  await flush();
+  assert.equal(view.signals.get('first').aborted,true);
+  assert.equal(view.signals.get('second').aborted,false);
+  view.gates.get('second').resolve('ok');
+  await flush();
+  assert.equal(view.signals.get('second').aborted,false);
+});
+
+test('unmounting aborts the signal of the running invocation',async t=>{
+  const view=await mountSignals(t);
+  view.click('First');
+  view.unmount();
+  await flush();
+  assert.equal(view.signals.get('first').aborted,true);
+});
+
+test('a completed invocation keeps its signal unaborted after the owner changes',async t=>{
+  const view=await mountSignals(t);
+  t.after(view.unmount);
+  view.click('First');
+  view.gates.get('first').resolve('ok');
+  await flush();
+  view.click('Switch');
+  await flush();
+  assert.equal(view.signals.get('first').aborted,false);
+  assert.deepEqual(view.log,['finally first false']);
+});
+
+test('the group signal is typed only inside members of its own group',t=>{
+  const {service,file,directory}=scope(t);
+  fs.writeFileSync(path.join(directory,'host.ts'),signalHostTypes);
+  service.open(file,signalComponent);
+  assert.deepEqual(service.diagnostics(file),[]);
+  const outputDir=path.join(directory,'check');
+  fs.writeFileSync(file,signalComponent);
+  assert.deepEqual(checkSurfaceProject(file,{outputDir}).diagnostics,[]);
+  for(const misuse of [
+    signalComponent.replace('p (work.pending ? "busy" : "idle")','p (work.signal.aborted ? "aborted" : "idle")'),
+    signalComponent.replace('action switchOwner() {','action switchOwner() { void work.signal;')
+  ]){
+    service.open(file,misuse);
+    const error=service.diagnostics(file).find(item=>item.code==='TS2339');
+    assert.ok(error,'editor reports the misuse');
+    assert.equal(misuse.slice(error.start,error.start+error.length),'signal');
+    fs.writeFileSync(file,misuse);
+    assert.ok(checkSurfaceProject(file,{outputDir}).diagnostics.some(item=>item.code==='TS2339'&&/signal/.test(item.message)));
+  }
+});

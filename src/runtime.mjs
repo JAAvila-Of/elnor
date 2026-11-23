@@ -278,6 +278,25 @@ export function createActionGroup(policy, readOwner, ownerScope) {
       const isCurrent = () => !disposed && !ownerScope.disposed && active.value === invocation && Object.is(currentOwner, readOwner());
       const cells = new WeakMap();
       const actions = new WeakMap();
+      // The signal is created on first read. A watcher aborts it as soon as the
+      // invocation stops being current, and stops when the invocation ends.
+      let controller, stopWatching, groupView;
+      const abort = () => {
+        stopWatching?.();
+        stopWatching = undefined;
+        if (!controller || controller.signal.aborted) return;
+        const tracking = current;
+        current = null;
+        try { controller.abort(); } finally { current = tracking; }
+      };
+      const signal = () => {
+        if (!controller) {
+          controller = new AbortController();
+          if (!isCurrent()) abort();
+          else stopWatching = effect(() => { if (!isCurrent()) abort(); });
+        }
+        return controller.signal;
+      };
       const lease = Object.assign(Object.create(managedHelpers), {
         bindCell(target) {
           if (!cells.has(target)) cells.set(target, {
@@ -295,6 +314,12 @@ export function createActionGroup(policy, readOwner, ownerScope) {
             apply(action, receiver, args) { if (isCurrent()) return Reflect.apply(action, receiver, args); }
           }));
           return actions.get(target);
+        },
+        bindGroup(target) {
+          return groupView ??= Object.freeze({
+            get pending() { return target.pending; },
+            get signal() { return signal(); }
+          });
         }
       });
       const fail = error => { record.value = {owner:currentOwner,outcome:{status:'error',error}}; };
@@ -313,6 +338,7 @@ export function createActionGroup(policy, readOwner, ownerScope) {
               if (retired || isCurrent()) step = iterator.next();
               else {
                 retired = true;
+                abort();
                 const {failure} = yielded;
                 if (failure !== noFailure && !awaitedFailures?.has(failure)) reportActionFailure(failure);
                 step = iterator.return();
@@ -325,6 +351,7 @@ export function createActionGroup(policy, readOwner, ownerScope) {
             catch (error) { value = error; failed = true; }
             if (!cleanup && !retired && !isCurrent()) {
               retired = true;
+              abort();
               step = iterator.return();
               continue;
             }
@@ -347,6 +374,7 @@ export function createActionGroup(policy, readOwner, ownerScope) {
           return result;
         }
       } finally {
+        stopWatching?.();
         if (active.value === invocation) active.value = null;
       }
     }

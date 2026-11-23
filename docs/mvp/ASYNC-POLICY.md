@@ -134,6 +134,34 @@ failed. Starting a new invocation clears that member's previous outcome.
   `await` had returned. Writes to Surface state bindings through the retired
   invocation or its Surface helpers are discarded.
 
+### Cancelling requests
+
+Inside a member, the group's `signal` property is the `AbortSignal` of that
+invocation. Pass it to `fetch` or any other API that accepts a signal.
+
+```elnor
+action group search(query) latest
+
+action async find() in search {
+  const response = await fetch(`/api/search?q=${query}`, {signal: search.signal});
+  return await response.json();
+}
+```
+
+The group aborts the signal when the invocation is retired: the owner
+changes, a newer `latest` invocation starts, or the component unmounts. The
+abort happens as soon as the change is observed, before the awaited work
+settles. A signal is never aborted after its invocation has finished.
+
+The signal is created only when a member reads it. `signal` exists only in
+members of the group; elsewhere TypeScript reports that the property does not
+exist. A helper action that needs the signal receives it as an argument.
+
+Aborting is a request to the provider. The server may already have applied a
+write, so writes still need an idempotency key when a retry is possible. Do
+not pass the signal to cleanup work: after retirement it is already aborted,
+while cleanup must still complete.
+
 ### Cleanup after retirement
 
 Retirement never interrupts cleanup. Cleanup covers `finally` blocks, the
@@ -234,7 +262,7 @@ the pending error and one is the checkpoint.
 
 `await using` in a `for`, `for in`, or plain `for of` head receives
 `ELN-ACTION-GROUP-SUSPENSION`. Declare the resource inside the loop body, or
-use it in a `for await` head. The group does not abort an external request
-or undo its effects. State protection applies to binding assignments, so
+use it in a `for await` head. The group does not undo the effects of an
+external request. State protection applies to binding assignments, so
 application code still owns in-place mutation and side effects outside
 Surface.

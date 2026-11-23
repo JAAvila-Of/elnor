@@ -147,6 +147,8 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     for(const member of ir.actions)locals.set(member.name,()=>member.group
       ?call('bindAction',ts.factory.createIdentifier(member.name))
       :call('bindHelper',ts.factory.createIdentifier(managedFactories.get(member.name))));
+    // A member sees its own group through the invocation, which owns the signal.
+    if(action.group)locals.set(action.group,()=>call('bindGroup',ts.factory.createIdentifier(action.group)));
     const implementation=action.group
       ?`function* (${action.params}) ${managedGeneratorBody(action,{lease,fresh})}`
       :action.functionSource.replace(/^(async )?function [^(]+/,(_,asyncKeyword='')=>`${asyncKeyword}function `);

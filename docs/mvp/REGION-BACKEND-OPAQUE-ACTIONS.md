@@ -72,10 +72,19 @@ component to the general renderer when its body stays within this subset:
 - calls to props;
 - nested functions and closures, and local names that shadow state.
 
-The compiler keeps the body as written. Each state the action names becomes a
-small accessor over its region slot, so reads, writes, compound assignments
-and updates inside closures go through `read` and `write`. Calcs are read from
-their slots, and root props from the region props.
+The compiler keeps the body as written. Each state or calc the action names
+becomes an accessor created by the region runtime's `regionCell`, and root
+props are captured when the action starts. Reads, writes, compound assignments
+and updates inside closures go through the region while the instance is
+mounted.
+
+An accessor belongs to the part of its slot's group that was open when the
+action started. When that part closes, for example on unmount or when an `if`
+branch closes, the runtime freezes the accessor before it clears the slot. A
+closure that outlives its instance then keeps reading and writing its own last
+value, as a general-renderer cell does, and never reaches a later instance that
+reuses the slot. The runtime reuses one accessor per slot and part across
+actions.
 
 These bodies still keep the general fallback: async actions, calls to other
 actions, `emit`, `this`, `arguments`, `super`, `new.target`, writes to closed
@@ -84,11 +93,9 @@ collections, and prop reads in an inlined child instance.
 `tests/region-general-actions.test.mjs` checks the selection and runs eight
 action shapes against the same expected views as the general renderer.
 
-One difference remains. After the region is disposed, `read` returns
-`undefined`. A closure created by an action that reads state after the
-component unmounts, such as a timer, sees `undefined` where the general
-renderer returns the last value. Writes after disposal are ignored in both
-backends.
+`tests/region-general-actions.test.mjs` also compares the region with the
+general renderer for closures used after unmount and after an `if` branch
+closes and reopens.
 
 The 19 components under `examples/` select the same backend as before. Each
 of them is rejected first by another rule, such as `on dispose`, a root with

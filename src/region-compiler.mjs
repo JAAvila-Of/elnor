@@ -112,7 +112,7 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }
     for(const p of fn.parameters)scan(p);scan(fn.body);if(invalid)reject(invalid);opaqueCount++;
     return {kind:'opaque-action',params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
-     states:[...slots],calcs:[...calcSlots],props:parentInstance===null?[...props.keys()]:[]};
+     states:[...slots].map(([name,slot])=>[name,slot,states[slot].group]),calcs:[...calcSlots].map(([name,slot])=>[name,slot,states[slot].group]),props:parentInstance===null?[...props.keys()]:[]};
    }
    const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if(action.async||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
     const nonempty=fn.body.statements.filter(n=>!ts.isEmptyStatement(n));if(nonempty.slice(0,-1).some(n=>ts.isExpressionStatement(n)&&isEmit(n.expression)))reject('nonterminal-emit-action-not-proven');
@@ -226,6 +226,7 @@ export function attachRegion(ir,legacy,options={}){
 }
 
 function regionDescriptor(ir,legacy,plan,options,fresh){
+ let cellAlias=null;
  const indexed=plan.states.flatMap((s,slot)=>s.instance===0&&s.kind!=='item'?[[s.name,slot]]:[]);
  const taskMode=plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential';
  const invalidations=taskMode?null:Array.from({length:plan.states.length},()=>new Map());
@@ -245,7 +246,7 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
  const initializerCode=s=>{const p=s.initialOpaque,lowered=p?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:s.initial};return `${lowered.param}=>(${lowered.read})`;};
  const actionCode=(body,index)=>{
-  if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body);
+  if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body,cellAlias??=fresh('__elnor_regionCell'));
   const context=plan.actionContexts?.[index],param=context?.region??'r',args=context?.args??'a';
   const statements=Array.isArray(body)?body.map(part=>{
    if(typeof part==='string')return part;if(part.kind==='emit'){const argsCode=part.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:part.parameters}).read);return `if(${param}.disposed)return;${param}.emit[${JSON.stringify(part.name)}](${argsCode.join(',')});`;}const lowered=options.lowerOpaque(part.opaque.opaque,part.opaque.locals,indexed,{context:param,args,parameters:part.parameters});
@@ -260,7 +261,8 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const listCode=l=>`{${forwarding(l).slice(1)}${forwarding(l)?',':''}node:${l.node},parent:${l.parent},exclusive:${JSON.stringify(l.exclusive)},nativeRows:${JSON.stringify(l.nativeRows)},child:${l.child},detached:${JSON.stringify(l.detached??true)},itemSlot:${l.itemSlot},read:${readCode(l.readOpaque??l.read)},key:${readCode(l.keyOpaque??l.key)}}`;
  const actionArray=`[${plan.actions.map(actionCode).join(',')}]`;
  const data=`{indexedReads:true,${emitFactory?'emitFactory:'+emitFactory+',':''}${plan.states.some(s=>s.initialTask!==undefined)?'initialTasks:'+JSON.stringify(plan.states.map(s=>s.initialTask??null))+',':''}invalidations:${JSON.stringify(invalidations?.map(m=>[...m])??null)},mode:${JSON.stringify(plan.mode)},components:[${(plan.components??[]).map(componentCode).join(',')}],ops:${plan.mode==='sequential'?JSON.stringify(plan.ops):'null'},names:null,nodes:[${nodeCode}],initializers:[${plan.states.map(initializerCode).join(',')}],observed:${JSON.stringify(plan.observed)},groups:${JSON.stringify(plan.groups)},branches:[${plan.branches.map(branchCode).join(',')}],lists:[${plan.lists.map(listCode).join(',')}],tasks:${plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential'?JSON.stringify(plan.tasks):'null'},derived:[${plan.derived.map(derivedCode).join(',')}],bindings:[${plan.bindings.map(bindingCode).join(',')}],events:[${plan.events.map(event=>{const {args,...data}=event;return args?`${JSON.stringify(data).slice(0,-1)},args:[${args.map(readCode).join(',')}]}`:JSON.stringify(data);}).join(',')}],actions:${actionTable??actionArray}}`;
- return {data,imports:componentImports.join('\n')+(actionTable?`\nconst ${actionTable}=${actionArray};`:'')};
+ return {data,imports:componentImports.join('\n')+(actionTable?`\nconst ${actionTable}=${actionArray};`:'')
+  +(cellAlias?`\nimport {regionCell as ${cellAlias}} from ${JSON.stringify(options.regionRuntimeImport)};`:'')};
 }
 
 function appendOwnedRegion(ir,legacy,options){

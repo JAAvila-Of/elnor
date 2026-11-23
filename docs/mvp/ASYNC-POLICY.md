@@ -201,6 +201,26 @@ measurements, one ordinary suspension took 113–121 ns, against 45–46 ns for 
 native `await`. A cleanup suspension took 91–100 ns. The measurement
 excludes the awaited work itself.
 
+A component with an async action, grouped or not, currently renders through
+the general renderer instead of the region backend. In one paired run of the
+synthetic matrix, an unused group added to each of 24 repeated panels raised
+mount CPU by 14–17% in both orders, against an identical-build variation of up
+to 6%. Each mounted panel also retained about 2 KB more heap. Counter actions
+rose by 2–12%. The form workload showed no increase beyond the
+identical-build variation. Composition exceeded it once, with +20% for mount
+in one order and −1% in the other. A plain async action also uses the general
+renderer. The run did not separate the cost of the renderer from the cost of
+the group itself. The cost matters mostly for components repeated many times,
+such as list rows.
+
+A later run of the same matrix declared an equivalent async action in the
+Elnor, React and Svelte versions of each stateful component. Svelte used at
+most 10% less renderer CPU than Elnor in every operation and order but one:
+form unmount, where it used 7% and 14% less. React used more CPU than Elnor in
+every operation and order. In both runs, the async action
+is declared but not called during measurement, and lists with an action per
+row are not covered.
+
 The build emits no source maps yet (CAP-10 in the
 [application roadmap](ECOSYSTEM-ROADMAP.md)), so debugging happens in the
 generated JavaScript. In a component with a group, each action body is a

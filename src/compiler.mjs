@@ -361,20 +361,26 @@ export function generate(ir,options={}){
   const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('opaque.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
   if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: opaque expression lowering failed');return {param:ctx,read:sf.statements[0].expression.getText(sf)};
  };
- // A general action keeps its body. Each state or calc it names becomes a
- // regionCell accessor and root props are captured when the action starts, so
- // reads, writes and closures behave as in the general renderer, also after
- // the component unmounts.
- const lowerOpaqueAction=(action,regionCell)=>{
-  const fresh=nameAllocator(ir.source+action.params+action.body),ctx=fresh('regionAction'),props=fresh('regionProps');
+ // A general action keeps its body and runs against the instance handle of
+ // the region runtime. States and calcs become accessors of that handle, other
+ // actions become its stable references and root props come from it, so reads,
+ // writes, calls and closures behave as in the general renderer, also after the
+ // instance closes or unmounts.
+ const lowerOpaqueAction=(action,{instance,table})=>{
+  const fresh=nameAllocator(ir.source+action.params+action.body),ctx=fresh('regionAction'),handle=fresh('actionInstance'),props=fresh('regionProps');
   const named=([name])=>(action.params+action.body).includes(name);
-  const slots=[...action.states,...action.calcs].filter(named).map(([name,slot,group])=>[name,slot,group,fresh(`state_${name}`)]);
+  const slots=[...action.states,...action.calcs].filter(named).map(([name,slot])=>[name,slot,fresh(`state_${name}`)]);
+  const calls=action.calls.filter(named).map(([name,index])=>[name,index,fresh(`action_${name}`)]);
   const usesProps=action.props.some(name=>named([name]));
   const locals=new Map([
    ...action.props.map(name=>[name,`${props}.${name}`]),
-   ...slots.map(([name,,,cell])=>[name,`${cell}.value`]),
+   ...slots.map(([name,,cell])=>[name,`${cell}.value`]),
+   ...calls.map(([name,,reference])=>[name,reference]),
   ]);
-  const cells=[...(usesProps?[`const ${props} = ${ctx}.props;`]:[]),...slots.map(([,slot,group,cell])=>`const ${cell} = ${regionCell}(${ctx}, ${slot}, ${group});`)];
+  const cells=[`const ${handle} = ${instance}(${ctx}, ${action.instance.slot}, ${action.instance.group});`,
+   ...(usesProps?[`const ${props} = ${handle}.props;`]:[]),
+   ...slots.map(([,slot,cell])=>`const ${cell} = ${handle}.cell(${slot});`),
+   ...calls.map(([,index,reference])=>`const ${reference} = ${handle}.action(${table}, ${index});`)];
   const code=`(${[ctx,...(action.params?[action.params]:[])].join(', ')}) => {\n${cells.join('\n')}\n${action.body.slice(1,-1)}\n}`;
   const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${ctx}.emit`});
   const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('action.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);

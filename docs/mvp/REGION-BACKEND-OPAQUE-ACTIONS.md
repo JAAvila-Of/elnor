@@ -72,30 +72,36 @@ component to the general renderer when its body stays within this subset:
 - calls to props;
 - nested functions and closures, and local names that shadow state.
 
-The compiler keeps the body as written. Each state or calc the action names
-becomes an accessor created by the region runtime's `regionCell`, and root
-props are captured when the action starts. Reads, writes, compound assignments
-and updates inside closures go through the region while the instance is
-mounted.
+The compiler keeps the body as written and runs it against an instance handle
+from the region runtime's `regionInstance`. There is one handle per component
+instance: the part of the instance's group that was open when its first action
+started. States and calcs become accessors of the handle, other actions become
+stable references of the handle, and root props come from it. Reads, writes,
+compound assignments, calls and closures go through the region while the
+instance is mounted.
 
-An accessor belongs to the part of its slot's group that was open when the
-action started. When that part closes, for example on unmount or when an `if`
-branch closes, the runtime freezes the accessor before it clears the slot. A
-closure that outlives its instance then keeps reading and writing its own last
-value, as a general-renderer cell does, and never reaches a later instance that
-reuses the slot. The runtime reuses one accessor per slot and part across
-actions.
+A closure keeps its handle. When the instance's part closes, for example on
+unmount or when an `if` branch closes, the handle freezes every slot of the
+group before the region clears or reuses it. A closure that outlives its
+instance then keeps reading and writing its own last values, and calling its
+own actions, as with general-renderer cells. It never reaches a later instance
+that reuses the slots.
 
-These bodies still keep the general fallback: async actions, calls to other
-actions, `emit`, `this`, `arguments`, `super`, `new.target`, writes to closed
-collections, and prop reads in an inlined child instance.
+A component in which any action calls another lowers all of its actions this
+way, so that every call shares the caller's handle.
+
+These bodies still keep the general fallback: async actions, `emit`, `this`,
+`arguments`, `super`, `new.target`, writes to closed collections, and prop
+reads in an inlined child instance.
 
 `tests/region-general-actions.test.mjs` checks the selection and runs eight
 action shapes against the same expected views as the general renderer.
 
 `tests/region-general-actions.test.mjs` also compares the region with the
 general renderer for closures used after unmount and after an `if` branch
-closes and reopens.
+closes and reopens. `tests/region-action-calls.test.mjs` does the same for
+calls with arguments, defaults and return values, recursion, an action passed
+as a value, its stable identity, and closures that call other actions.
 
 The 19 components under `examples/` select the same backend as before. Each
 of them is rejected first by another rule, such as `on dispose`, a root with

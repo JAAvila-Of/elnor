@@ -96,13 +96,19 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
    // A general action body runs as written. It reads and writes this instance's
    // state slots through the region, so it needs no statement-level proof.
    // Receivers, other actions, emits and closed collections keep fallback.
+   // Actions call each other through the instance handle, so a component
+   // with any call between actions lowers all of its actions this way.
+   const actionBase=actions.length,actionIndex=new Map(own.actions.map((a,i)=>[a.name,actionBase+i]));
+   const referencesAction=fn=>{let found=false;const scan=n=>{if(ts.isIdentifier(n)&&actionIndex.has(n.text)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n))found=true;}if(!found)ts.forEachChild(n,scan);};scan(fn);return found;};
+   const callsBetween=own.actions.some(a=>referencesAction(ts.createSourceFile('action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)));
+   const instanceSlot=[...slots.values(),...calcSlots.values()][0]??-1;
    function opaqueAction(fn){
-    const others=new Set(own.actions.map(a=>a.name));let invalid=null;
+    const calls=new Set();let invalid=null;
     function scan(n){
      if(n.kind===ts.SyntaxKind.ThisKeyword||n.kind===ts.SyntaxKind.SuperKeyword||ts.isMetaProperty(n))invalid??='opaque-action-receiver-not-proven';
      if(ts.isIdentifier(n)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n)){
       if(n.text==='arguments')invalid??='opaque-action-receiver-not-proven';
-      if(others.has(n.text))invalid??='opaque-action-call-not-proven';
+      if(actionIndex.has(n.text))calls.add(n.text);
       if(n.text==='emit')invalid??='opaque-action-emit-not-proven';
       if(arrayStates.has(n.text))invalid??='opaque-action-collection-not-proven';
       if(parentInstance!==null&&props.has(n.text))invalid??='opaque-action-child-props-not-proven';
@@ -111,12 +117,13 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }
     for(const p of fn.parameters)scan(p);scan(fn.body);if(invalid)reject(invalid);opaqueCount++;
     return {kind:'opaque-action',params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
-     states:[...slots].map(([name,slot])=>[name,slot,states[slot].group]),calcs:[...calcSlots].map(([name,slot])=>[name,slot,states[slot].group]),props:parentInstance===null?[...props.keys()]:[]};
+     states:[...slots],calcs:[...calcSlots],props:parentInstance===null?[...props.keys()]:[],calls:[...calls].map(name=>[name,actionIndex.get(name)]),
+     instance:instanceSlot<0?{slot:-1,group:-1}:{slot:instanceSlot,group:states[instanceSlot].group}};
    }
    const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if(action.async||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
     const nonempty=fn.body.statements.filter(n=>!ts.isEmptyStatement(n));if(nonempty.slice(0,-1).some(n=>ts.isExpressionStatement(n)&&isEmit(n.expression)))reject('nonterminal-emit-action-not-proven');
     parameters=new Map();for(const [index,p] of fn.parameters.entries()){if(!ts.isIdentifier(p.name)||p.dotDotDotToken||parameters.has(p.name.text)||slots.has(p.name.text)||calcSlots.has(p.name.text)||props.has(p.name.text))reject('action-signature-not-proven');parameters.set(p.name.text,index);}
-    let defaults=[],body,context=null;try{for(const [index,p] of fn.parameters.entries())if(p.initializer){
+    let defaults=[],body,context=null;if(callsBetween&&sequential)body=opaqueAction(fn);else try{for(const [index,p] of fn.parameters.entries())if(p.initializer){
      if(!sequential)reject('action-default-requires-sequential');const opaque=opaqueProof(p.initializer.getText());
      function scan(n){const parent=n.parent,reference=ts.isIdentifier(n)&&!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n);if(reference&&parameters.has(n.text)&&parameters.get(n.text)>=index)reject('action-default-forward-or-self-reference');ts.forEachChild(n,scan);}scan(p.initializer);
      defaults.push({index,opaque,parameters:[...parameters]});
@@ -225,7 +232,7 @@ export function attachRegion(ir,legacy,options={}){
 }
 
 function regionDescriptor(ir,legacy,plan,options,fresh){
- let cellAlias=null;
+ let instanceAlias=null;
  const indexed=plan.states.flatMap((s,slot)=>s.instance===0&&s.kind!=='item'?[[s.name,slot]]:[]);
  const taskMode=plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential';
  const invalidations=taskMode?null:Array.from({length:plan.states.length},()=>new Map());
@@ -239,13 +246,13 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const derivedCode=d=>{const lowered=d.opaque?options.lowerOpaque(d.opaque,d.locals,indexed):{param:'r',read:d.read};return `{slot:${d.slot},masks:${JSON.stringify(d.masks)},read:${lowered.param}=>(${lowered.read})}`;};
  const componentAliases=new Map(),componentImports=[];for(const c of plan.components??[]){if(!componentAliases.has(c.import)){const alias=fresh('__elnor_childRegion'+componentAliases.size);componentAliases.set(c.import,alias);const target=options.componentImports?.get(c.import);if(!target)throw Error('ELN-REGION: child module mapping missing');componentImports.push(`import {__elnor_renderRegion as ${alias}} from ${JSON.stringify(target)};`);}}
  const bridge=(plan.emitNames?.length??0)||(plan.components??[]).some(c=>c.handlers?.length),anchor=bridge?options.lowerOpaque('0',[],indexed).param:null;
- const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))?fresh(anchor+'_actions'):null;
+ const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))||plan.actions.some(a=>a?.kind==='opaque-action'&&a.calls.length)?fresh(anchor+'_actions'):null;
  const handlerFactory=c=>{const param=anchor+'_handler',alive=param+'_alive',args=param+'_args',values=param+'_values';return `(${param},${alive})=>({${c.handlers.map(h=>{const call=h.call,reads=call.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:call.parameters}).read);const run=call.kind==='action'?`const ${values}=[${reads.join(',')}];if(!${alive}())return;${actionTable}[${call.action}](${param},...${values});`:`${param}.emit[${JSON.stringify(call.name)}](${reads.join(',')});`;return `${JSON.stringify(h.name)}:(...${args})=>{if(!${alive}())return;${run}}`;}).join(',')}})`;};
  const emitFactory=plan.emitNames?.length?`${anchor}_packet=>({${plan.emitNames.map(name=>`${JSON.stringify(name)}:(...${anchor}_args)=>${anchor}_packet[${JSON.stringify(name)}]?.(...${anchor}_args)`).join(',')}})`:null;
  const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
  const initializerCode=s=>{const p=s.initialOpaque,lowered=p?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:s.initial};return `${lowered.param}=>(${lowered.read})`;};
  const actionCode=(body,index)=>{
-  if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body,cellAlias??=fresh('__elnor_regionCell'));
+  if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body,{instance:instanceAlias??=fresh('__elnor_regionInstance'),table:actionTable});
   const context=plan.actionContexts?.[index],param=context?.region??'r',args=context?.args??'a';
   const statements=Array.isArray(body)?body.map(part=>{
    if(typeof part==='string')return part;if(part.kind==='emit'){const argsCode=part.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:part.parameters}).read);return `if(${param}.disposed)return;${param}.emit[${JSON.stringify(part.name)}](${argsCode.join(',')});`;}const lowered=options.lowerOpaque(part.opaque.opaque,part.opaque.locals,indexed,{context:param,args,parameters:part.parameters});
@@ -261,7 +268,7 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const actionArray=`[${plan.actions.map(actionCode).join(',')}]`;
  const data=`{indexedReads:true,${emitFactory?'emitFactory:'+emitFactory+',':''}${plan.states.some(s=>s.initialTask!==undefined)?'initialTasks:'+JSON.stringify(plan.states.map(s=>s.initialTask??null))+',':''}invalidations:${JSON.stringify(invalidations?.map(m=>[...m])??null)},mode:${JSON.stringify(plan.mode)},components:[${(plan.components??[]).map(componentCode).join(',')}],ops:${plan.mode==='sequential'?JSON.stringify(plan.ops):'null'},names:null,nodes:[${nodeCode}],initializers:[${plan.states.map(initializerCode).join(',')}],observed:${JSON.stringify(plan.observed)},groups:${JSON.stringify(plan.groups)},branches:[${plan.branches.map(branchCode).join(',')}],lists:[${plan.lists.map(listCode).join(',')}],tasks:${plan.derived.length||plan.branches.length||plan.lists.length||plan.tasks.some(t=>t.dynamic)||plan.mode==='sequential'?JSON.stringify(plan.tasks):'null'},derived:[${plan.derived.map(derivedCode).join(',')}],bindings:[${plan.bindings.map(bindingCode).join(',')}],events:[${plan.events.map(event=>{const {args,...data}=event;return args?`${JSON.stringify(data).slice(0,-1)},args:[${args.map(readCode).join(',')}]}`:JSON.stringify(data);}).join(',')}],actions:${actionTable??actionArray}}`;
  return {data,imports:componentImports.join('\n')+(actionTable?`\nconst ${actionTable}=${actionArray};`:'')
-  +(cellAlias?`\nimport {regionCell as ${cellAlias}} from ${JSON.stringify(options.regionRuntimeImport)};`:'')};
+  +(instanceAlias?`\nimport {regionInstance as ${instanceAlias}} from ${JSON.stringify(options.regionRuntimeImport)};`:'')};
 }
 
 function appendOwnedRegion(ir,legacy,options){

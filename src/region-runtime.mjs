@@ -60,22 +60,37 @@ export function mountRegion(target,plan,props,handlers=void 0){
  if(plan.mode==='sequential')return mountBoundary(target,(host,owner)=>{mountTaskRegion(host,plan,{props,handlers,stage(_frame,dispose){owner.own(dispose);}});});
  if(runtimeBlueprint){if(plan.tasks)return mountTaskRegion(target,plan);return mountScalarRegion(target,plan);}
 }
-// General actions read and write state through these accessors. Each one
-// belongs to the part of the slot's group that was open when the action
-// started. When that part closes, the runtime freezes the accessor before it
-// clears or reuses the slot, so a closure that outlives its instance keeps
-// its own value, as a cell of the general renderer does, and never reaches a
-// later instance that reuses the slot. One accessor exists per slot and part.
-export function regionCell(context,slot,group){
- const owner=context.owner?context.owner(slot):context,part=owner.parts[group],cells=part.cells??=new Map();
- let cell=cells.get(slot);
- if(!cell){
-  let frozen=false,last;
-  cell={get value(){return frozen?last:owner.read(slot);},set value(next){if(frozen)last=next;else owner.write(slot,next);},
-   freeze(){last=owner.values[slot];frozen=true;}};
-  cells.set(slot,cell);
- }
- return cell;
+// General actions run against one handle per component instance: the part of
+// the instance's group that was open when the first action started. A closure
+// keeps that handle, so it reaches the same instance even when it runs after
+// the instance's branch closes, reopens or the component unmounts. When the part
+// closes, the handle freezes every slot of the group before the region clears
+// or reuses it, and later reads and writes use those frozen values, as cells
+// of the general renderer do. The handle also keeps stable references to the
+// component's actions and the props observed when it was created.
+const regionInstanceMark=Symbol('regionInstance'),instancesWithoutState=new WeakMap();
+export function regionInstance(context,slot,group){
+ if(context[regionInstanceMark])return context;
+ if(slot<0){let instance=instancesWithoutState.get(context);if(!instance)instancesWithoutState.set(context,instance=createRegionInstance(context,null,context.props));return instance;}
+ const owner=context.owner?context.owner(slot):context,part=owner.parts[group];
+ return part.instance??=createRegionInstance(owner,part,context.props);
+}
+function createRegionInstance(owner,part,props){
+ const cells=new Map(),actions=new Map();let frozen=null;
+ const instance={[regionInstanceMark]:true,props,
+  cell(slot){
+   let cell=cells.get(slot);
+   if(!cell)cells.set(slot,cell={get value(){return frozen?frozen.get(slot):owner.read(slot);},set value(next){if(frozen)frozen.set(slot,next);else owner.write(slot,next);}});
+   return cell;
+  },
+  action(table,index){
+   let action=actions.get(index);
+   if(!action)actions.set(index,action=(...args)=>table[index](instance,...args));
+   return action;
+  },
+  freeze(slots){frozen=new Map(slots.map(slot=>[slot,owner.values[slot]]));}
+ };
+ return instance;
 }
 export function mountScalarRegion(target,plan){
  const doc=target.ownerDocument??document,{root,roots=[root],refs}=plan.instantiate(doc),size=plan.initializers?plan.initializers.length:plan.initial.length,words=Math.ceil(plan.bindings.length/32),resources=[];
@@ -178,7 +193,7 @@ function mountTaskRegion(target,plan,config={}){
   else{for(const id of plan.groups[group].tasks)clearTask(id);for(let i=part.resources.length-1;i>=0;i--)try{clearEvent(part.resources[i]);}catch(error){failures.push(error);}}
   if(runtimeBlueprint&&plan.mode!=='sequential')for(const node of part.roots)try{node.remove();}catch(error){failures.push(error);}
   else if((!runtimeLists||!bulkDepth)&&!(runtimeLists&&group===entry&&keepEntryRoot)&&(group!==entry||config.detached||config.rowFragment)){const owned=part.domNodes??(config.detached?part.roots:null)??[...(part.fragment?.childNodes??[])];for(const node of owned)try{node.remove();}catch(error){failures.push(error);}}
-  if(part.cells){for(const cell of part.cells.values())cell.freeze();part.cells=null;}
+  if(part.instance){part.instance.freeze(plan.groups[group].slots);part.instance=null;}
   for(const slot of plan.groups[group].slots){region.values[slot]=undefined;if(region.bridges)region.bridges[slot]=undefined;}
   for(const node of plan.groups[group].nodes)region.refs[node]=undefined;
   part.resources.length=0;part.roots.length=0;part.fragment=null;if(part.domNodes)part.domNodes.length=0;part.domNodes=null;errors(failures,'Multiple branch disposal failures');

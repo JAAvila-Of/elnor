@@ -7,7 +7,7 @@ import {sourceKey,sourcePath,sourceImport} from './source-identity.mjs';
 import {createDocumentStore} from './document-store.mjs';
 import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
-import {actionGroupPolicies} from './action-groups.mjs';
+import {actionGroupPolicies, ownerIdentityWarnings} from './action-groups.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
 
 const ts = getTs();
@@ -128,6 +128,9 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
       for(const error of guardCallConflicts(ts,ls.getProgram(),virtualName(doc),doc.projection.guardChecks)){
         errors.push({...error,file:doc.file,...position(doc.source,error.start)});
       }
+    }
+    for(const warning of ownerIdentityWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection.ownerChecks)){
+      errors.push({...warning,file:doc.file,...position(doc.source,warning.start)});
     }
     for (const d of [...ls.getSyntacticDiagnostics(virtualName(doc)), ...ls.getSemanticDiagnostics(virtualName(doc))]) {
       if(doc.projection.recoveryTails?.some(tail=>d.start>=tail.start&&d.start<tail.end))continue;

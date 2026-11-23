@@ -90,7 +90,7 @@ export function projectSurface(source, filename) {
   const g = text => map.generated(text);
   const c = span => map.copy(span);
   const property = span => {if(span?.length===0)map.segments.push({originalStart:span.start,generatedStart:map.source.length,length:0});c(span);};
-  const propContexts = [], guardChecks = [], recoveryTails = [];
+  const propContexts = [], guardChecks = [], recoveryTails = [], ownerChecks = [];
   if (ir.header) {
     let cursor = ir.headerSpan.start;
     for (const imp of ir.imports.filter(i => i.path.endsWith('.eln'))) {
@@ -125,7 +125,13 @@ export function projectSurface(source, filename) {
       // that does not parse yet is still projected for completions.
       if (group.owners) {
         for (const owner of group.owners) {
-          if (owner.name === null || owners.has(owner.name)) { g('void ('); c(owner.exprSpan); g(');\n'); }
+          if (owner.name !== null && !owners.has(owner.name)) continue;
+          g('void (');
+          // Direct state owners compare revisions, so their type is not checked.
+          if (!ir.states.some(state => state.name === owner.name)) {
+            ownerChecks.push({offset: map.source.length, length: owner.exprSpan.length, span: owner.exprSpan, expr: owner.expr});
+          }
+          c(owner.exprSpan); g(');\n');
         }
       } else if (group.owner) { g('void ['); c(group.ownerSpan); g('];\n'); }
     }
@@ -222,5 +228,5 @@ export function projectSurface(source, filename) {
   g('}, __slots?: {');
   for (const slot of ir.slots) g(`${slot}?: () => void;`);
   g('}): void {}\n');
-  return {ir, map, errors, propContexts, guardChecks, recoveryTails};
+  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks};
 }

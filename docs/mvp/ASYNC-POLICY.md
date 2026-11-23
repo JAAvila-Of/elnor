@@ -147,6 +147,11 @@ outcome.
   action group orders(customer.id) single-flight
   action group search(workspace.id, filter) latest
   ```
+
+  The editor marks an object owner with the warning
+  `ELN-ACTION-GROUP-OWNER-IDENTITY` and suggests its `id` when every object
+  type of the owner has one. Direct state owners are exempt because they
+  compare revisions. The warning does not block a check or a build.
 - A retired invocation unwinds at its next ordinary resumption, as if that
   `await` had returned. Writes to Surface state bindings through the retired
   invocation or its Surface helpers are discarded.

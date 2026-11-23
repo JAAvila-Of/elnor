@@ -131,3 +131,55 @@ test('the editor and the checker type owner expressions', t => {
   fs.writeFileSync(file, typo);
   assert.ok(checkSurfaceProject(file, {outputDir}).diagnostics.some(item => item.code === 'TS2339' && /missing/.test(item.message)));
 });
+
+const identityComponent = owner => `component Orders(customer: {id: number; name: string}, tags: string[], load: (id: number) => Promise<string>) {
+  state draft = {id: 1, name: "Draft"};
+  calc selected = customer;
+  action group orders(${owner}) single-flight
+
+  action async refresh() in orders {
+    return await load(customer.id);
+  }
+
+  ui {
+    section {
+      button "Refresh" => refresh()
+    }
+  }
+}
+`;
+
+function identityWarnings(t, owner) {
+  const {file, directory} = scope(t);
+  const service = createSurfaceLanguageService({root: directory});
+  t.after(() => service.dispose());
+  const text = identityComponent(owner);
+  service.open(file, text);
+  const diagnostics = service.diagnostics(file);
+  assert.ok(diagnostics.every(item => item.severity === 'warning'), JSON.stringify(diagnostics));
+  return {text, warnings: diagnostics.filter(item => item.code === 'ELN-ACTION-GROUP-OWNER-IDENTITY'), file, directory};
+}
+
+test('the editor warns when an owner is compared by object identity and suggests its id', t => {
+  const {text, warnings, file, directory} = identityWarnings(t, 'customer');
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].severity, 'warning');
+  assert.equal(text.slice(warnings[0].start, warnings[0].start + warnings[0].length), 'customer');
+  assert.match(warnings[0].message, /identity/);
+  assert.match(warnings[0].message, /customer\.id/);
+  fs.writeFileSync(file, text);
+  assert.deepEqual(checkSurfaceProject(file, {outputDir: path.join(directory, 'check')}).diagnostics, []);
+});
+
+test('the identity warning covers calcs and list elements without an id', t => {
+  assert.equal(identityWarnings(t, 'selected').warnings.length, 1);
+  const {text, warnings} = identityWarnings(t, 'customer.id, tags');
+  assert.equal(warnings.length, 1);
+  assert.equal(text.slice(warnings[0].start, warnings[0].start + warnings[0].length), 'tags');
+  assert.doesNotMatch(warnings[0].message, /tags\.id/);
+});
+
+test('the identity warning skips keys and direct state owners', t => {
+  assert.deepEqual(identityWarnings(t, 'customer.id').warnings, []);
+  assert.deepEqual(identityWarnings(t, 'draft').warnings, []);
+});

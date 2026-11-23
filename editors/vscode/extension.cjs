@@ -108,7 +108,7 @@ exports.activate = async function (context) {
         const diagnostics = response.value.map(error => {
           const diagnostic = new vscode.Diagnostic(new vscode.Range(doc.positionAt(error.start), doc.positionAt(error.start + error.length)),
             error.approximate ? `${error.message} (generated-code error; approximate location)` : error.message,
-            vscode.DiagnosticSeverity.Error);
+            error.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error);
           diagnostic.code = error.code;
           diagnostic.source = error.approximate ? 'Elnor (approximate)' : 'Elnor';
           return diagnostic;

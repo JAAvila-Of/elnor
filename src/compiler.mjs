@@ -119,6 +119,11 @@ function hasFieldError(nodes){return nodes.some(n=>n.errorExpr!==undefined||(n.c
 function disabledLiteral(code){if(code===undefined)return undefined;const sf=ts.createSourceFile('disabled.ts',`(${code});`,ts.ScriptTarget.Latest,true);let n=sf.statements[0]?.expression;while(n&&ts.isParenthesizedExpression(n))n=n.expression;return n?.kind===ts.SyntaxKind.TrueKeyword?true:n?.kind===ts.SyntaxKind.FalseKeyword?false:undefined;}
 function hasClasses(nodes){return nodes.some(n=>n.classExpr!==undefined||(n.children&&hasClasses(n.children)));}
 function classLiteral(code){if(code===undefined)return undefined;const sf=ts.createSourceFile('class.ts',`(${code});`,ts.ScriptTarget.Latest,true);let n=sf.statements[0]?.expression;while(n&&ts.isParenthesizedExpression(n))n=n.expression;return n&&(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))?n.text:undefined;}
+// Action group options are emitted only when the group declares them.
+function groupOptions(group){
+  const options=[...(group.capacity!==null?[`capacity: ${group.capacity}`]:[]),...(group.timeout!==null?[`timeout: ${group.timeout}`]:[])];
+  return options.length?`, {${options.join(', ')}}`:'';
+}
 function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){
   const diagnostics=validateComponent(ir);
   if(diagnostics.length)throw Object.assign(new Error(diagnostics.map(d=>`${d.code}: ${d.message}`).join('\n')),{diagnostics});
@@ -199,7 +204,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       `    const ${ownerKeys.get(group.name)} = ${runtime.actionOwnerKey}(() => [${group.owners.map(ownerRead).join(', ')}], ${helpers.scope});`),
     ...groups.map(group=>{
       const owner=ownerKeys.has(group.name)?`${ownerKeys.get(group.name)}.value`:ownerRead(group.owners[0]);
-      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope}${group.capacity===null?"":`, ${group.capacity}`});`;
+      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope}${groupOptions(group)});`;
     }),
     ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
     ...ir.states.map((s,index)=>{

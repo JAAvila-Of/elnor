@@ -257,7 +257,7 @@ const managedHelpers = Object.freeze({
   asyncIteration
 });
 
-export function createActionGroup(policy, readOwner, ownerScope, capacity = 100) {
+export function createActionGroup(policy, readOwner, ownerScope, {capacity = 100, timeout = null} = {}) {
   const active = cell(null);
   let disposed = false;
   let owner;
@@ -321,14 +321,14 @@ export function createActionGroup(policy, readOwner, ownerScope, capacity = 100)
       const actions = new WeakMap();
       // The signal is created on first read. A watcher aborts it as soon as the
       // invocation stops being current, and stops when the invocation ends.
-      let controller, stopWatching, groupView;
+      let controller, stopWatching, groupView, retirement, timer;
       const abort = () => {
         stopWatching?.();
         stopWatching = undefined;
         if (!controller || controller.signal.aborted) return;
         const tracking = current;
         current = null;
-        try { controller.abort(); } finally { current = tracking; }
+        try { controller.abort(retirement); } finally { current = tracking; }
       };
       const signal = () => {
         if (!controller) {
@@ -363,6 +363,17 @@ export function createActionGroup(policy, readOwner, ownerScope, capacity = 100)
           });
         }
       });
+      // A timeout retires the invocation like an owner change, reports a
+      // TimeoutError on the member and frees the group at once, even if the
+      // awaited work never settles.
+      if (timeout !== null) timer = setTimeout(() => {
+        if (!isCurrent()) return;
+        retirement = new DOMException(`The action timed out after ${timeout} ms`, 'TimeoutError');
+        record.value = {owner:currentOwner,outcome:{status:'error',error:retirement}};
+        abort();
+        active.value = null;
+        startWaiting();
+      }, timeout);
       const fail = error => { record.value = {owner:currentOwner,outcome:{status:'error',error}}; };
       // Rejections delivered at ordinary suspensions belong to awaited work.
       // Anything else escaping a retired invocation is a cleanup failure.
@@ -415,6 +426,7 @@ export function createActionGroup(policy, readOwner, ownerScope, capacity = 100)
           return result;
         }
       } finally {
+        clearTimeout(timer);
         stopWatching?.();
         if (active.value === invocation) {
           active.value = null;

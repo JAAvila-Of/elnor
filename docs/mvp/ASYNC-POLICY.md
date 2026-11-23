@@ -141,6 +141,11 @@ outcome.
   component, drops the waiting calls. The queue lives in memory, so a page
   reload loses the waiting calls; durable writes still need the
   [recovery journal](RECOVERY-JOURNAL.md).
+- Any policy may add a timeout, from `1ms` to `3600s`, as in
+  `latest timeout 10s` or `queue 20 timeout 30s`. An invocation that runs
+  longer is retired, and its member reports a `TimeoutError` in `error`.
+  The group is free at that moment, even if the awaited work never settles,
+  so the next call starts at once.
 - Changing the owner or unmounting the component retires its invocation.
   A direct state owner gets a new revision on every change, including a
   return to its original value within the same turn. Props, calcs and
@@ -179,7 +184,8 @@ action async find() in search {
 ```
 
 The group aborts the signal when the invocation is retired: the owner
-changes, a newer `latest` invocation starts, or the component unmounts. The
+changes, a newer `latest` invocation starts, the component unmounts, or the
+group timeout expires. A timeout aborts with a `TimeoutError` reason. The
 abort happens as soon as the change is observed, before the awaited work
 settles. A signal is never aborted after its invocation has finished.
 

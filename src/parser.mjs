@@ -65,7 +65,7 @@ function groupHeader(source, open) {
   const lineEnd=source.slice(open).search(/\r?\n|$/)+open;
   let parens;
   try { parens=balanced(source.slice(0,lineEnd),open,'(',')'); } catch { return null; }
-  const tail=/^[ \t]*([\w-]*)(?:[ \t]+([^\s;/]+))?[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(source.slice(parens.end));
+  const tail=/^[ \t]*([\w-]*)((?:[ \t]+[^\s;/]+)*)[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(source.slice(parens.end));
   if(!tail)return null;
   const contents=parens.contents,leading=contents.length-contents.trimStart().length;
   const ownerSpan=contents.trim()?range(open+1+leading,contents.trim().length):range(open,parens.end-open);
@@ -78,8 +78,39 @@ function groupHeader(source, open) {
     const start=element.getStart(script)-1,text=element.getText(script);
     return {expr:text,exprSpan:range(open+1+start,text.length),name:ts.isIdentifier(element)?element.text:null};
   }):null;
+  const optionsStart=parens.end+tail.indices[2][0];
+  const options=[...tail[2].matchAll(/\S+/g)].map(token=>({text:token[0],span:range(optionsStart+token.index,token[0].length)}));
   return {owner:{owner:contents.trim(),ownerSpan,owners},policy:tail[1],policySpan:capture(tail,1,parens.end),
-    capacity:tail[2]??null,capacitySpan:tail[2]?capture(tail,2,parens.end):null,end:parens.end+tail[0].length};
+    options,end:parens.end+tail[0].length};
+}
+// Only queue takes a capacity: the number of calls that may wait. Any policy
+// may add `timeout` with a duration from 1ms to 3600s.
+function groupOptions(policy, tokens, groupError) {
+  const result={capacity:policy==='queue'?100:null,timeout:null};
+  const options=[...tokens];
+  const invalid=(span,message)=>groupError('ELN-ACTION-GROUP-POLICY',span,message);
+  if(policy==='queue'&&options.length&&options[0].text!=='timeout'){
+    const token=options.shift();
+    result.capacitySpan=token.span;
+    if(/^[1-9]\d{0,5}$/.test(token.text))result.capacity=Number(token.text);
+    else invalid(token.span,'Write the queue capacity as a whole number from 1 to 999999');
+  }
+  while(options.length){
+    const token=options.shift();
+    if(token.text!=='timeout'){
+      invalid(token.span,/^\d/.test(token.text)?'Only the queue policy takes a capacity'
+        :`Unknown action group option '${token.text}'. Use timeout followed by a duration`);
+      continue;
+    }
+    const value=options.shift();
+    if(result.timeoutSpan){invalid(token.span,'Declare the timeout once');continue;}
+    result.timeoutSpan=value?.span??token.span;
+    const parsed=value&&/^([1-9]\d{0,6})(ms|s)$/.exec(value.text);
+    const milliseconds=parsed?Number(parsed[1])*(parsed[2]==='s'?1000:1):NaN;
+    if(milliseconds<=3600000)result.timeout=milliseconds;
+    else invalid(result.timeoutSpan,'Write the timeout as a duration from 1ms to 3600s, such as 500ms or 10s');
+  }
+  return result;
 }
 function checkExpr(source, at, expr, tolerant=false, exact=false) {
   const prefix='const x = (';
@@ -338,15 +369,7 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
         `Name at least one owner for action group '${group.name}'`);
       if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
         'Choose single-flight, latest, keep-latest or queue as the action group policy');
-      // Only queue takes a capacity: the number of calls that may wait.
-      group.capacity=group.policy==='queue'?100:null;
-      if(header.capacity!==null){
-        group.capacitySpan=header.capacitySpan;
-        if(group.policy!=='queue')groupError('ELN-ACTION-GROUP-POLICY',header.capacitySpan,'Only the queue policy takes a capacity');
-        else if(!/^[1-9]\d{0,5}$/.test(header.capacity))groupError('ELN-ACTION-GROUP-POLICY',header.capacitySpan,
-          'Write the queue capacity as a whole number from 1 to 999999');
-        else group.capacity=Number(header.capacity);
-      }
+      Object.assign(group,groupOptions(group.policy,header.options,groupError));
       actionGroups.push(group);pos=header.end;continue;
     }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){

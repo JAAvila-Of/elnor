@@ -9,7 +9,7 @@ import {cell, createActionGroup, scope} from '../src/runtime.mjs';
 
 function queue(capacity) {
   const owner = cell('A'), owned = scope(), started = [], gates = new Map();
-  const group = createActionGroup('queue', () => owner.value, owned, capacity);
+  const group = createActionGroup('queue', () => owner.value, owned, {capacity});
   const send = group.action(() => function* (label) {
     started.push(label);
     const gate = Promise.withResolvers();

@@ -303,16 +303,19 @@ measurements, one ordinary suspension took 113–121 ns, against 45–46 ns for 
 native `await`. A cleanup suspension took 91–100 ns. The measurement
 excludes the awaited work itself.
 
-A component with an async action, grouped or not, currently renders through
-the general renderer instead of the region backend. In one paired run of the
+A component with an action group renders through the general renderer
+instead of the region backend. A plain async action, without a group, runs in
+a sequential region as a general action body, as described in
+[general region actions](REGION-BACKEND-OPAQUE-ACTIONS.md). The two runs below
+were measured before that change, when a plain async action also used the
+general renderer. In one paired run of the
 synthetic matrix, an unused group added to each of 24 repeated panels raised
 mount CPU by 14–17% in both orders, against an identical-build variation of up
 to 6%. Each mounted panel also retained about 2 KB more heap. Counter actions
 rose by 2–12%. The form workload showed no increase beyond the
 identical-build variation. Composition exceeded it once, with +20% for mount
-in one order and −1% in the other. A plain async action also uses the general
-renderer. The run did not separate the cost of the renderer from the cost of
-the group itself. The cost matters mostly for components repeated many times,
+in one order and −1% in the other. The run did not separate the cost of the
+renderer from the cost of the group itself. The cost matters mostly for components repeated many times,
 such as list rows.
 
 A later run of the same matrix declared an equivalent async action in the

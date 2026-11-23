@@ -48,7 +48,6 @@ test('general synchronous action bodies keep the sequential region backend', () 
 });
 
 const unsupported = {
-  async: ['  action async go() { value = await Promise.resolve(1); }', /action-signature-not-proven/],
   receiver: ['  action go() { value = this === undefined ? 1 : 2; }', /opaque-action-receiver-not-proven/],
   args: ['  action go() { value = arguments.length; }', /opaque-action-receiver-not-proven/],
 };

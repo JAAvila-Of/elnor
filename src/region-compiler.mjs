@@ -118,14 +118,14 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
      ts.forEachChild(n,scan);
     }
     for(const p of fn.parameters)scan(p);scan(fn.body);if(invalid)reject(invalid);opaqueCount++;
-    return {kind:'opaque-action',params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
+    return {kind:'opaque-action',async:!!fn.modifiers?.some(m=>m.kind===ts.SyntaxKind.AsyncKeyword),params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
      states:[...slots],calcs:[...calcSlots],props:parentInstance===null?[...props.keys()]:[],calls:[...calls].map(name=>[name,actionIndex.get(name)]),
      instance:instanceSlot<0?{slot:-1,group:-1}:{slot:instanceSlot,group:states[instanceSlot].group}};
    }
-   const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if(action.async||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
+   const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if((action.async&&!sequential)||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
     const nonempty=fn.body.statements.filter(n=>!ts.isEmptyStatement(n));if(nonempty.slice(0,-1).some(n=>ts.isExpressionStatement(n)&&isEmit(n.expression)))reject('nonterminal-emit-action-not-proven');
     parameters=new Map();for(const [index,p] of fn.parameters.entries()){if(!ts.isIdentifier(p.name)||p.dotDotDotToken||parameters.has(p.name.text)||slots.has(p.name.text)||calcSlots.has(p.name.text)||props.has(p.name.text))reject('action-signature-not-proven');parameters.set(p.name.text,index);}
-    let defaults=[],body,context=null;if(callsBetween&&sequential)body=opaqueAction(fn);else try{for(const [index,p] of fn.parameters.entries())if(p.initializer){
+    let defaults=[],body,context=null;if((callsBetween||action.async)&&sequential)body=opaqueAction(fn);else try{for(const [index,p] of fn.parameters.entries())if(p.initializer){
      if(!sequential)reject('action-default-requires-sequential');const opaque=opaqueProof(p.initializer.getText());
      function scan(n){const parent=n.parent,reference=ts.isIdentifier(n)&&!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n);if(reference&&parameters.has(n.text)&&parameters.get(n.text)>=index)reject('action-default-forward-or-self-reference');ts.forEachChild(n,scan);}scan(p.initializer);
      defaults.push({index,opaque,parameters:[...parameters]});

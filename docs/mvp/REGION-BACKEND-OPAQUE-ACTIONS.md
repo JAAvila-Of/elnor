@@ -90,7 +90,15 @@ that reuses the slots.
 A component in which any action calls another lowers all of its actions this
 way, so that every call shares the caller's handle.
 
-These bodies still keep the general fallback: async actions, `emit`, `this`,
+Async actions take this path too. Their body keeps its handle across awaits,
+so a result that arrives after the instance's branch closed, reopened or the
+component unmounted updates that instance's own frozen values, as with
+general-renderer cells, and never the new instance.
+`tests/region-async-actions.test.mjs` compares completion, failure, a result
+after the branch reopens and a result after unmount with the general renderer.
+Action groups still use the general renderer.
+
+These bodies still keep the general fallback: `emit`, `this`,
 `arguments`, `super`, `new.target`, writes to closed collections, and prop
 reads in an inlined child instance.
 

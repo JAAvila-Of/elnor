@@ -857,3 +857,48 @@ test('await using in a loop head keeps an explicit diagnostic in the editor and 
     return reported&&text.slice(reported.start,reported.start+reported.length)==='await';
   });
 });
+
+test('stack traces name managed actions, their helpers and the driver',async t=>{
+  const {file,directory}=scope(t);
+  fs.writeFileSync(file,`component Trace(probe: { capture(): void; load(): Promise<void>; fail(): Promise<void> }) {
+  state workspace = "A";
+  action group work(workspace) latest
+
+  action record() { probe.capture(); }
+
+  action async inspect() in work {
+    await probe.load();
+    record();
+    await probe.fail();
+  }
+
+  ui {
+    section {
+      p (inspect.error instanceof Error ? inspect.error.stack ?? "" : "")
+      p (inspect.name)
+      button "Inspect" => inspect()
+    }
+  }
+}
+`);
+  const outputDir=path.join(directory,'build');
+  const build=buildSurfaceProject(file,{outputDir,checkOutputDir:path.join(directory,'check')});
+  const module=await import(pathToFileURL(path.join(outputDir,build.entryOutput)));
+  setupDOM();
+  const root=new FakeNode('root'), stacks=[];
+  t.after(module.mount(root,{probe:{
+    capture(){stacks.push(new Error('capture').stack);},
+    async load(){},
+    async fail(){await null;throw new Error('late');}
+  }}));
+  findButton(root,'Inspect').click();
+  await flush();
+  await flush();
+  assert.equal(stacks.length,1);
+  assert.match(stacks[0],/\n\s+at record \(/);
+  assert.match(stacks[0],/\n\s+at inspect \(/);
+  const [failure,name]=root.descendants('p').map(node=>node.textContent);
+  assert.match(failure,/^Error: late\n/);
+  assert.match(failure,/\n\s+at async inspect \(/);
+  assert.equal(name,'inspect');
+});

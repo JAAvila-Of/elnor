@@ -201,6 +201,17 @@ measurements, one ordinary suspension took 113–121 ns, against 45–46 ns for 
 native `await`. A cleanup suspension took 91–100 ns. The measurement
 excludes the awaited work itself.
 
+The build emits no source maps yet (CAP-10 in the
+[application roadmap](ECOSYSTEM-ROADMAP.md)), so debugging happens in the
+generated JavaScript. In a component with a group, each action body is a
+generator, and every action keeps its name in stack traces, including the
+`at async` frame of awaited work that failed. Stepping over a managed `await`
+stops at the next statement of the action, as with a native `await`.
+The generated code differs from the source in three ways. A managed `await`
+appears as `yield`, and state and helper references go through the
+invocation's `actionLease`. An awaited `finally` adds two steps: one records
+the pending error and one is the checkpoint.
+
 `await using` in a `for`, `for in`, or plain `for of` head receives
 `ELN-ACTION-GROUP-SUSPENSION`. Declare the resource inside the loop body, or
 use it in a `for await` head. The group does not abort an external request

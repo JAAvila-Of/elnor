@@ -150,7 +150,9 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     const implementation=action.group
       ?`function* (${action.params}) ${managedGeneratorBody(action,{lease,fresh})}`
       :action.functionSource.replace(/^(async )?function [^(]+/,(_,asyncKeyword='')=>`${asyncKeyword}function `);
-    return fragment(`function ${managedFactories.get(action.name)}(${lease}) { return ${implementation}; }`,locals,'statement');
+    // The property key names the function for stack traces without adding a
+    // binding that would shadow the action inside its own body.
+    return fragment(`function ${managedFactories.get(action.name)}(${lease}) { return {${action.name}: ${implementation}}.${action.name}; }`,locals,'statement');
   }):[];
   const args=fresh('args'),value=fresh('value'),mount=fresh('mount'),render=fresh('render');
   const seed=hot?fresh('hotSeed'):null,capture=hot?fresh('hotCapture'):null;
@@ -190,7 +192,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       const owner=stateOwners.has(group.owner)?`${helpers.state}.${group.owner}.revision`:fragment(group.owner);
       return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope});`;
     }),
-    ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)});`),
+    ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
     ...ir.states.map((s,index)=>{
       const init=fragment(s.expr);
       const makeCell=stateOwners.has(s.name)?runtime.actionOwnerCell:runtime.cell;

@@ -253,7 +253,7 @@ export function createActionGroup(policy, readOwner, ownerScope) {
   }
   ownerScope.own(dispose);
 
-  function action(createBody) {
+  function action(createBody, name) {
     const record = cell(null);
     records.add(record);
     const visible = () => {
@@ -351,7 +351,9 @@ export function createActionGroup(policy, readOwner, ownerScope) {
       }
     }
 
+    // The action name labels the driver in async stack traces and the console.
     return Object.defineProperties(run, {
+      ...(name === undefined ? {} : {name:{value:name, configurable:true}}),
       status:{get:()=>visible().status},
       pending:{get:()=>visible().status === 'pending'},
       result:{get:()=>visible().result},

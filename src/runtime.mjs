@@ -65,6 +65,23 @@ export function actionOwnerCell(initial) {
   };
 }
 
+// An owner expression or list reads a key that keeps its identity while every
+// element is equal by Object.is. It is computed on first read, so an owner may
+// refer to calcs declared after the group.
+export function actionOwnerKey(read, owner) {
+  let key, output;
+  return {
+    get value() {
+      output ??= computed(() => {
+        const next = read();
+        if (!key || key.length !== next.length || key.some((item, index) => !Object.is(item, next[index]))) key = next;
+        return key;
+      }, owner);
+      return output.value;
+    }
+  };
+}
+
 const idleAction = Object.freeze({status:'idle'});
 const pendingAction = Object.freeze({status:'pending'});
 

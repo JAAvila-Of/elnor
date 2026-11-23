@@ -121,7 +121,13 @@ export function projectSurface(source, filename) {
       available.add(group.name);
       groups.add(group.name);
       g('const '); c(group.nameSpan); g(` = {} as ${actionGroupType};\n`);
-      if (owners.has(group.owner)) { g('void ('); c(group.ownerSpan); g(');\n'); }
+      // Unknown bare owners already have a Surface diagnostic. An owner list
+      // that does not parse yet is still projected for completions.
+      if (group.owners) {
+        for (const owner of group.owners) {
+          if (owner.name === null || owners.has(owner.name)) { g('void ('); c(owner.exprSpan); g(');\n'); }
+        }
+      } else if (group.owner) { g('void ['); c(group.ownerSpan); g('];\n'); }
     }
     for (const action of ir.actions) if (groups.has(action.group)) { g('void ('); c(action.groupSpan); g(');\n'); }
   }

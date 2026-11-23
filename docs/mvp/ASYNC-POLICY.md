@@ -100,9 +100,10 @@ compiler/runtime/editor and examples remain unchanged. The broader
 
 ## Action groups
 
-Surface action groups bind async actions to a component owner. The owner
-names a prop, state, or calc in the component. An action joins the group
-with `async` and uses ordinary `await` in its body.
+Surface action groups bind async actions to a component owner. The owner is
+a prop, state, or calc of the component, an expression over them, or a
+comma-separated list of such owners. An action joins the group with `async`
+and uses ordinary `await` in its body.
 
 The group declaration states the concurrency policy once for its members.
 Keeping the request and follow-up logic in the action body preserves normal
@@ -134,8 +135,18 @@ outcome.
   autosave: the last edit is always saved, without one request per edit.
 - Changing the owner or unmounting the component retires its invocation.
   A direct state owner gets a new revision on every change, including a
-  return to its original value within the same turn. Props and calcs use
-  the owner value observed at admission and resumption.
+  return to its original value within the same turn. Props, calcs and
+  expressions use the owner value observed at admission and resumption,
+  compared with `Object.is`. A list changes when any of its elements
+  changes, and each element follows the same rules.
+- Objects are compared by identity. When a parent passes a new object with
+  the same data, such as a customer reloaded from the server, an object owner
+  retires the invocation. Use a key as the owner instead:
+
+  ```elnor
+  action group orders(customer.id) single-flight
+  action group search(workspace.id, filter) latest
+  ```
 - A retired invocation unwinds at its next ordinary resumption, as if that
   `await` had returned. Writes to Surface state bindings through the retired
   invocation or its Surface helpers are discarded.

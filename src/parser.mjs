@@ -59,6 +59,27 @@ function balanced(s, p, open, close, tolerant=false, guardRecovery=null) {
   }
   throw diagnostic('ELN-PARSE-003',s,starts.at(-1)??p,'unterminated block');
 }
+// The owner list of an action group stays on its declaration line. Each owner
+// is an expression; a bare identifier keeps its name for binding checks.
+function groupHeader(source, open) {
+  const lineEnd=source.slice(open).search(/\r?\n|$/)+open;
+  let parens;
+  try { parens=balanced(source.slice(0,lineEnd),open,'(',')'); } catch { return null; }
+  const tail=/^[ \t]*([\w-]*)[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(source.slice(parens.end));
+  if(!tail)return null;
+  const contents=parens.contents,leading=contents.length-contents.trimStart().length;
+  const ownerSpan=contents.trim()?range(open+1+leading,contents.trim().length):range(open,parens.end-open);
+  const script=ts.createSourceFile('owner.ts',`[${contents}];`,ts.ScriptTarget.Latest,true);
+  const [statement]=script.statements;
+  const list=statement&&ts.isExpressionStatement(statement)&&ts.isArrayLiteralExpression(statement.expression)?statement.expression:null;
+  const valid=list&&script.statements.length===1&&!script.parseDiagnostics?.length
+    &&list.elements.every(element=>!ts.isOmittedExpression(element)&&!ts.isSpreadElement(element));
+  const owners=valid?list.elements.map(element=>{
+    const start=element.getStart(script)-1,text=element.getText(script);
+    return {expr:text,exprSpan:range(open+1+start,text.length),name:ts.isIdentifier(element)?element.text:null};
+  }):null;
+  return {owner:{owner:contents.trim(),ownerSpan,owners},policy:tail[1],policySpan:capture(tail,1,parens.end),end:parens.end+tail[0].length};
+}
 function checkExpr(source, at, expr, tolerant=false, exact=false) {
   const prefix='const x = (';
   const sf=ts.createSourceFile('expression.ts',prefix+expr+');',ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
@@ -306,12 +327,17 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       if(declarations.length>1)throw diagnostic('ELN-EVENT-ARITY',source,start,'spike 003 supports at most one event argument');
       events.push({name:match[1],nameSpan:capture(match,1,pos),params:declarations,line:source.slice(0,pos).split('\n').length});pos=p.end;continue;
     }
-    if((match=/^action[ \t]+group[ \t]+([A-Za-z_]\w*)[ \t]*\([ \t]*([A-Za-z_]\w*)[ \t]*\)[ \t]*([\w-]*)[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(remaining))){
-      const group={name:match[1],nameSpan:capture(match,1,pos),owner:match[2],ownerSpan:capture(match,2,pos),
-        policy:match[3],policySpan:capture(match,3,pos),line:source.slice(0,pos).split('\n').length};
+    let header;
+    if((match=/^action[ \t]+group[ \t]+([A-Za-z_]\w*)[ \t]*\(/d.exec(remaining))&&(header=groupHeader(source,pos+match[0].length-1))){
+      const group={name:match[1],nameSpan:capture(match,1,pos),...header.owner,
+        policy:header.policy,policySpan:header.policySpan,line:source.slice(0,pos).split('\n').length};
+      if(!group.owners)groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
+        'Write the owner as an expression or a comma-separated list of expressions');
+      else if(!group.owners.length)groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
+        `Name at least one owner for action group '${group.name}'`);
       if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
         'Choose single-flight, latest or keep-latest as the action group policy');
-      actionGroups.push(group);pos+=match[0].length;continue;
+      actionGroups.push(group);pos=header.end;continue;
     }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){
       const start=pos+match[0].length-1,p=balanced(source,start,'(',')');
@@ -375,8 +401,8 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
     if(boundNames.has(group.name))groupError('ELN-ACTION-GROUP-NAME',group.nameSpan,`Choose an unused name for action group '${group.name}'`);
     else groups.add(group.name);
     boundNames.add(group.name);
-    if(!owners.has(group.owner))groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
-      `Action group owner '${group.owner}' must name a prop, state or calc in this component`);
+    for(const owner of group.owners??[])if(owner.name!==null&&!owners.has(owner.name))groupError('ELN-ACTION-GROUP-OWNER',owner.exprSpan,
+      `Action group owner '${owner.name}' must name a prop, state or calc in this component`);
   }
   for(const action of actions)if(action.groupSpan&&!groups.has(action.group)){
     groupError('ELN-ACTION-GROUP-MEMBER',action.groupSpan,groups.size

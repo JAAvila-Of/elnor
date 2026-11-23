@@ -129,14 +129,19 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   const fresh=nameAllocator(ir.source);
   const helpers=Object.fromEntries(['props','state','calc','emit','target','handlers','slots','root','scope'].map(name=>[name,fresh(name)]));
   const groups=ir.actionGroups;
-  const stateOwners=new Set(groups.map(group=>group.owner).filter(owner=>ir.states.some(state=>state.name===owner)));
+  // A direct state owner compares revisions. Any other owner, or a list of
+  // owners, reads a key that keeps its identity while every element is equal.
+  const stateOwners=new Set(groups.flatMap(group=>group.owners.map(owner=>owner.name)).filter(name=>ir.states.some(state=>state.name===name)));
+  const ownerKeys=new Map(groups.filter(group=>group.owners.length!==1||group.owners[0].name===null).map(group=>[group.name,fresh('ownerKey')]));
   const runtime=Object.fromEntries([...(hasForm(ir.ui)?['formBinding']:[]),...(hasFieldError(ir.ui)?['fieldErrorBinding']:[]),...(hasAria(ir.ui)?['setAriaBoolean','ariaBooleanBinding']:[]),...(hasDisabled(ir.ui)?['setDisabled','disabledBinding']:[]),...(hasSelect(ir.ui)?['select']:[]),...(hasCheckbox(ir.ui)?['checkbox']:[]),...(hasTextarea(ir.ui)?['textarea']:[]),...(hasClasses(ir.ui)?['setClass','classBinding']:[]),...(hotLists?['runRegionUntracked']:[]),'cell','computed','uninitializedBinding','element','rootElement','text','button','literalText','literalButton','input','when','repeat','mountBoundary','renderComponent','createComponentRoot','renderSlot'].map(name=>[name,fresh(`runtime_${name}`)]));
   if(groups.length)runtime.createActionGroup=fresh('runtime_createActionGroup');
   if(stateOwners.size)runtime.actionOwnerCell=fresh('runtime_actionOwnerCell');
+  if(ownerKeys.size)runtime.actionOwnerKey=fresh('runtime_actionOwnerKey');
   const runtimeChildren=ir.imports.filter(i=>i.path.endsWith('.eln')&&!i.typeOnly);
   const children=new Map(runtimeChildren.map(i=>[i.local,fresh(`child_${i.local}`)]));
   const detachedChildren=new Set(runtimeChildren.filter(i=>detachedImports.has(i.path)).map(i=>i.local));
   const fragment=(code,locals=new Map(),kind='expression')=>rewrite(ir,code,locals,kind,helpers);
+  const ownerRead=owner=>stateOwners.has(owner.name)?`${helpers.state}.${owner.name}.revision`:fragment(owner.expr);
   const managedFactories=new Map(groups.length?ir.actions.map(action=>[action.name,fresh('actionBody')]):[]);
   const managedBodies=groups.length?ir.actions.map(action=>{
     const lease=fresh('actionLease');
@@ -190,8 +195,10 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     `function ${render}(${helpers.root},${helpers.props},${helpers.handlers},${helpers.slots},${helpers.scope}${hot?`,${seed},${capture}${rows?','+rows:''}`:''}) {`,
     `    const ${helpers.state} = {${stateSentinels}};`,
     `    const ${helpers.calc} = {${calcSentinels}};`,
+    ...groups.filter(group=>ownerKeys.has(group.name)).map(group=>
+      `    const ${ownerKeys.get(group.name)} = ${runtime.actionOwnerKey}(() => [${group.owners.map(ownerRead).join(', ')}], ${helpers.scope});`),
     ...groups.map(group=>{
-      const owner=stateOwners.has(group.owner)?`${helpers.state}.${group.owner}.revision`:fragment(group.owner);
+      const owner=ownerKeys.has(group.name)?`${ownerKeys.get(group.name)}.value`:ownerRead(group.owners[0]);
       return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope});`;
     }),
     ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),

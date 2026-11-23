@@ -31,7 +31,7 @@ export function virtualCheckSource(ir){
   projectReactiveState(ir.states,text=>{reactiveState+=text;},state=>{reactiveState+=state.name;});
   if(reactiveState)add(reactiveState.trimEnd(),1);
   for(const calc of ir.calcs)add(`const ${calc.name} = (${calc.expr});`,calc.line,1);
-  for(const group of ir.actionGroups)add(`const ${group.name} = {} as ${actionGroupType}; void (${group.owner});`,group.line);
+  for(const group of ir.actionGroups)add(`const ${group.name} = {} as ${actionGroupType}; void [${group.owners.map(owner=>owner.expr).join(", ")}];`,group.line);
   if(ir.events.length){
     add(`const emit: {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>`${p.name}: ${p.type}`).join(', ')}) => void`).join(';')}} = {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>p.name).join(', ')}) => {}`).join(',')}};`,ir.events[0].line);
   } else add('const emit = {};',1);

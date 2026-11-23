@@ -257,7 +257,7 @@ const managedHelpers = Object.freeze({
   asyncIteration
 });
 
-export function createActionGroup(policy, readOwner, ownerScope, {capacity = 100, timeout = null} = {}) {
+export function createActionGroup(policy, readOwner, ownerScope, {capacity = 100, timeout = null, debounce = null} = {}) {
   const active = cell(null);
   let disposed = false;
   let owner;
@@ -365,20 +365,27 @@ export function createActionGroup(policy, readOwner, ownerScope, {capacity = 100
       });
       // A timeout retires the invocation like an owner change, reports a
       // TimeoutError on the member and frees the group at once, even if the
-      // awaited work never settles.
-      if (timeout !== null) timer = setTimeout(() => {
+      // awaited work never settles. It starts with the body, after any debounce.
+      const startTimeout = () => { if (timeout !== null) timer = setTimeout(() => {
         if (!isCurrent()) return;
         retirement = new DOMException(`The action timed out after ${timeout} ms`, 'TimeoutError');
         record.value = {owner:currentOwner,outcome:{status:'error',error:retirement}};
         abort();
         active.value = null;
         startWaiting();
-      }, timeout);
+      }, timeout); };
       const fail = error => { record.value = {owner:currentOwner,outcome:{status:'error',error}}; };
       // Rejections delivered at ordinary suspensions belong to awaited work.
       // Anything else escaping a retired invocation is a cleanup failure.
       let awaitedFailures;
       try {
+        // debounce: a newer call during the quiet period retires this one
+        // before its body runs.
+        if (debounce !== null) {
+          await new Promise(resolve => { setTimeout(resolve, debounce); });
+          if (!isCurrent()) return;
+        }
+        startTimeout();
         let step;
         try {
           const iterator = createBody(lease).apply(this, args);

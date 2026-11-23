@@ -84,12 +84,14 @@ function groupHeader(source, open) {
     options,end:parens.end+tail[0].length};
 }
 // Only queue takes a capacity: the number of calls that may wait. Any policy
-// may add `timeout` with a duration from 1ms to 3600s.
+// may add `timeout`, and latest may add `debounce`, each with a duration from
+// 1ms to 3600s.
+const groupDurations=['timeout','debounce'];
 function groupOptions(policy, tokens, groupError) {
-  const result={capacity:policy==='queue'?100:null,timeout:null};
+  const result={capacity:policy==='queue'?100:null,timeout:null,debounce:null};
   const options=[...tokens];
   const invalid=(span,message)=>groupError('ELN-ACTION-GROUP-POLICY',span,message);
-  if(policy==='queue'&&options.length&&options[0].text!=='timeout'){
+  if(policy==='queue'&&options.length&&!groupDurations.includes(options[0].text)){
     const token=options.shift();
     result.capacitySpan=token.span;
     if(/^[1-9]\d{0,5}$/.test(token.text))result.capacity=Number(token.text);
@@ -97,18 +99,19 @@ function groupOptions(policy, tokens, groupError) {
   }
   while(options.length){
     const token=options.shift();
-    if(token.text!=='timeout'){
+    if(!groupDurations.includes(token.text)){
       invalid(token.span,/^\d/.test(token.text)?'Only the queue policy takes a capacity'
-        :`Unknown action group option '${token.text}'. Use timeout followed by a duration`);
+        :`Unknown action group option '${token.text}'. Use timeout or debounce followed by a duration`);
       continue;
     }
-    const value=options.shift();
-    if(result.timeoutSpan){invalid(token.span,'Declare the timeout once');continue;}
-    result.timeoutSpan=value?.span??token.span;
+    const name=token.text,value=options.shift();
+    if(result[`${name}Span`]){invalid(token.span,`Declare the ${name} once`);continue;}
+    result[`${name}Span`]=value?.span??token.span;
+    if(name==='debounce'&&policy!=='latest'){invalid(token.span,'Use debounce with the latest policy');continue;}
     const parsed=value&&/^([1-9]\d{0,6})(ms|s)$/.exec(value.text);
     const milliseconds=parsed?Number(parsed[1])*(parsed[2]==='s'?1000:1):NaN;
-    if(milliseconds<=3600000)result.timeout=milliseconds;
-    else invalid(result.timeoutSpan,'Write the timeout as a duration from 1ms to 3600s, such as 500ms or 10s');
+    if(milliseconds<=3600000)result[name]=milliseconds;
+    else invalid(result[`${name}Span`],`Write the ${name} as a duration from 1ms to 3600s, such as 500ms or 10s`);
   }
   return result;
 }

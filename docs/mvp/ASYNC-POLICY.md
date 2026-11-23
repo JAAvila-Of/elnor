@@ -146,6 +146,16 @@ outcome.
   longer is retired, and its member reports a `TimeoutError` in `error`.
   The group is free at that moment, even if the awaited work never settles,
   so the next call starts at once.
+- `latest` may add a debounce with the same durations, as in
+  `latest debounce 300ms`. Each call still retires the previous invocation
+  at once, then waits for the quiet period before running its body. A call
+  during that wait retires the waiting invocation, whose body never runs.
+  The member is `pending` while it waits, and a timeout starts counting when
+  the body starts.
+
+  ```elnor
+  action group search(query) latest debounce 300ms timeout 10s
+  ```
 - Changing the owner or unmounting the component retires its invocation.
   A direct state owner gets a new revision on every change, including a
   return to its original value within the same turn. Props, calcs and

@@ -121,7 +121,7 @@ function hasClasses(nodes){return nodes.some(n=>n.classExpr!==undefined||(n.chil
 function classLiteral(code){if(code===undefined)return undefined;const sf=ts.createSourceFile('class.ts',`(${code});`,ts.ScriptTarget.Latest,true);let n=sf.statements[0]?.expression;while(n&&ts.isParenthesizedExpression(n))n=n.expression;return n&&(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))?n.text:undefined;}
 // Action group options are emitted only when the group declares them.
 function groupOptions(group){
-  const options=[...(group.capacity!==null?[`capacity: ${group.capacity}`]:[]),...(group.timeout!==null?[`timeout: ${group.timeout}`]:[])];
+  const options=['capacity','timeout','debounce'].filter(name=>group[name]!==null).map(name=>`${name}: ${group[name]}`);
   return options.length?`, {${options.join(', ')}}`:'';
 }
 function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){

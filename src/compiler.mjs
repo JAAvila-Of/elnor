@@ -199,7 +199,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       `    const ${ownerKeys.get(group.name)} = ${runtime.actionOwnerKey}(() => [${group.owners.map(ownerRead).join(', ')}], ${helpers.scope});`),
     ...groups.map(group=>{
       const owner=ownerKeys.has(group.name)?`${ownerKeys.get(group.name)}.value`:ownerRead(group.owners[0]);
-      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope});`;
+      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope}${group.capacity===null?"":`, ${group.capacity}`});`;
     }),
     ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
     ...ir.states.map((s,index)=>{

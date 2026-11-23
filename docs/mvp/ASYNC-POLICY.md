@@ -14,7 +14,7 @@ This guide connects the implemented pieces; it does not introduce an API.
 | Recover a write after page reload | [RecoverableSave](../../examples/recoverable-save/RecoverableSave.eln) | Store the scoped intent before sending, query authoritative status, retry the same intent only after confirmed absence, acknowledge terminal outcomes |
 | Reuse invocation guards | [ManagedSearch and ManagedSave](OPERATION-HELPER.md) | Opt into the local TS helper while keeping business state, lifecycle registration and write identity explicit |
 | Retire work with a component | [Component disposal](COMPONENT-DISPOSAL.md) | Register synchronous cleanup, invalidate publication and request cooperative abort; do not expect an awaited cleanup or remote rollback |
-| Preserve every accepted operation | No queue example is established | Define ordering, capacity/backpressure, failure recovery, ownership and persistence before implementing a queue |
+| Preserve every accepted operation | The `queue` action group policy below | Choose its capacity; the queue keeps order, continues after a failure and drops waiting calls when the owner changes. It is not persistent, so durable operations also need the [recovery journal](RECOVERY-JOURNAL.md) |
 
 A latest-response policy suppresses obsolete publication; it does not serialize
 remote mutations. Single-flight admission is local to its owner and does not
@@ -133,6 +133,14 @@ outcome.
   replaces the waiting one, which resolves to `undefined`. A call from a new
   owner, or unmounting the component, drops the waiting call. This suits
   autosave: the last edit is always saved, without one request per edit.
+- `queue` runs every accepted call in order, one at a time. Up to 100 calls
+  may wait, or the number written after the policy, as in `queue 20`. When
+  the queue is full, the new call resolves to `undefined` and the waiting
+  calls are kept. A failure leaves its error on that member and the queue
+  continues with the next call. A call from a new owner, or unmounting the
+  component, drops the waiting calls. The queue lives in memory, so a page
+  reload loses the waiting calls; durable writes still need the
+  [recovery journal](RECOVERY-JOURNAL.md).
 - Changing the owner or unmounting the component retires its invocation.
   A direct state owner gets a new revision on every change, including a
   return to its original value within the same turn. Props, calcs and

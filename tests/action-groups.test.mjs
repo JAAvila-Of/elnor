@@ -79,7 +79,7 @@ test('native completion and definitions work on action groups while the author i
     .replace('result.openOrders','result.');
   service.open(file,partial);
   const suggestions=target=>service.completions(file,partial.indexOf(target)+target.length);
-  assert.deepEqual(suggestions(') lat').map(item=>item.name),['single-flight','latest','keep-latest']);
+  assert.deepEqual(suggestions(') lat').map(item=>item.name),['single-flight','latest','keep-latest','queue']);
   assert.deepEqual(suggestions('in dash').map(item=>item.name),['dashboard']);
   assert.ok(suggestions('result.').some(item=>item.name==='openOrders'));
   const diagnostics=service.diagnostics(file);

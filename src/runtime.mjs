@@ -257,31 +257,32 @@ const managedHelpers = Object.freeze({
   asyncIteration
 });
 
-export function createActionGroup(policy, readOwner, ownerScope) {
+export function createActionGroup(policy, readOwner, ownerScope, capacity = 100) {
   const active = cell(null);
   let disposed = false;
   let owner;
   const records = new Set();
-  // keep-latest holds at most one call made while an invocation was running.
-  // A newer call, a new owner or disposal drops it, resolving to undefined.
-  let deferred;
-  const dropDeferred = () => {
-    const dropped = deferred;
-    deferred = undefined;
-    dropped?.resolve(undefined);
-  };
-  const startDeferred = () => {
-    const next = deferred;
-    deferred = undefined;
-    if (!next) return;
-    next.resolve(!disposed && !ownerScope.disposed && Object.is(next.owner, readOwner()) ? next.start() : undefined);
+  // keep-latest and queue hold calls made while an invocation is running.
+  // keep-latest keeps only the newest; queue keeps up to `capacity`, in order.
+  // A new owner or disposal drops them, and a dropped call resolves to undefined.
+  const waiting = [];
+  const dropWaiting = () => { for (const call of waiting.splice(0)) call.resolve(undefined); };
+  const startWaiting = () => {
+    while (waiting.length) {
+      const next = waiting.shift();
+      if (!disposed && !ownerScope.disposed && Object.is(next.owner, readOwner())) {
+        next.resolve(next.start());
+        return;
+      }
+      next.resolve(undefined);
+    }
   };
 
   function dispose() {
     disposed = true;
     active.value = null;
     for (const record of records) record.value = null;
-    dropDeferred();
+    dropWaiting();
   }
   ownerScope.own(dispose);
 
@@ -298,10 +299,12 @@ export function createActionGroup(policy, readOwner, ownerScope) {
       const currentOwner = readOwner();
       const previous = active.value;
       if (policy === 'single-flight' && previous && Object.is(owner, currentOwner)) return;
-      if (policy === 'keep-latest') {
-        dropDeferred();
-        if (previous && Object.is(owner, currentOwner)) {
-          return new Promise(resolve => { deferred = {owner:currentOwner, resolve, start:() => run.apply(this, args)}; });
+      if (policy === 'keep-latest' || policy === 'queue') {
+        if (!Object.is(owner, currentOwner)) dropWaiting();
+        else if (previous) {
+          if (policy === 'keep-latest') dropWaiting();
+          else if (waiting.length >= capacity) return;
+          return new Promise(resolve => { waiting.push({owner:currentOwner, resolve, start:() => run.apply(this, args)}); });
         }
       }
       if (!Object.is(owner, currentOwner)) {
@@ -415,7 +418,7 @@ export function createActionGroup(policy, readOwner, ownerScope) {
         stopWatching?.();
         if (active.value === invocation) {
           active.value = null;
-          startDeferred();
+          startWaiting();
         }
       }
     }

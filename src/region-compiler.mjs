@@ -102,7 +102,9 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
    const referencesAction=fn=>{let found=false;const scan=n=>{if(ts.isIdentifier(n)&&actionIndex.has(n.text)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n))found=true;}if(!found)ts.forEachChild(n,scan);};scan(fn);return found;};
    // on dispose runs as a general action body registered with the instance.
    const disposalSource=own.disposal?ts.createSourceFile('dispose.ts',`function dispose() { void (${own.disposal.expr}); }`,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS):null;
-   const callsBetween=own.actions.some(a=>referencesAction(ts.createSourceFile('action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)))||(!!disposalSource&&referencesAction(disposalSource));
+   const childProps=[];(function collect(nodes){for(const node of nodes??[]){if(node.kind==='component')childProps.push(...node.props);collect(node.children);}})(own.ui);
+   const callsBetween=own.actions.some(a=>referencesAction(ts.createSourceFile('action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)))||(!!disposalSource&&referencesAction(disposalSource))
+    ||childProps.some(prop=>referencesAction(ts.createSourceFile('prop.ts',`(${prop.expr});`,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS)));
    const instanceSlot=[...slots.values(),...calcSlots.values()][0]??-1;
    function opaqueAction(fn){
     const calls=new Set();let invalid=null;
@@ -121,6 +123,22 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     return {kind:'opaque-action',async:!!fn.modifiers?.some(m=>m.kind===ts.SyntaxKind.AsyncKeyword),params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
      states:[...slots],calcs:[...calcSlots],props:parentInstance===null?[...props.keys()]:[],calls:[...calls].map(name=>[name,actionIndex.get(name)]),
      instance:instanceSlot<0?{slot:-1,group:-1}:{slot:instanceSlot,group:states[instanceSlot].group}};
+   }
+   // A child that runs code later (general actions, async actions or on
+   // dispose) can read a prop after its parent instance closes. Its props are
+   // evaluated through the parent instance handle captured at mount, so a late
+   // read sees the parent's frozen values, as general-renderer getters read
+   // retained cells. Row items are not covered by that handle and keep fallback.
+   // Callbacks and actions may be passed; assignments outside callbacks may not.
+   function instanceProp(expr){
+    const source=ts.createSourceFile('prop.ts',`function prop() { return (${expr}); }`,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=source.statements[0];
+    const scan=(n,nested)=>{
+     if(ts.isIdentifier(n)&&locals.has(n.text)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n))reject('sequential-component-prop-not-proven');}
+     if(!nested&&((ts.isBinaryExpression(n)&&n.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&n.operatorToken.kind<=ts.SyntaxKind.LastAssignment)||((ts.isPrefixUnaryExpression(n)||ts.isPostfixUnaryExpression(n))&&[ts.SyntaxKind.PlusPlusToken,ts.SyntaxKind.MinusMinusToken].includes(n.operator))||ts.isDeleteExpression(n)))reject('sequential-component-prop-not-proven');
+     ts.forEachChild(n,child=>scan(child,nested||ts.isFunctionLike(n)));
+    };
+    scan(fn.body,false);
+    return opaqueAction(fn);
    }
    const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if((action.async&&!sequential)||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
     const nonempty=fn.body.statements.filter(n=>!ts.isEmptyStatement(n));if(nonempty.slice(0,-1).some(n=>ts.isExpressionStatement(n)&&isEmit(n.expression)))reject('nonterminal-emit-action-not-proven');
@@ -198,7 +216,7 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }
     if(n.kind==='component'){
      if(n.children.some(node=>node.kind!=='on')||(!sequential&&n.children.length))reject('child-slots-or-events-not-proven');const imp=own.imports.find(i=>i.local===n.name&&!i.typeOnly&&i.path.endsWith('.eln'));const child=imp&&components.get(sourceKey(sourceImport(own.filename,imp.path)));if(!child)reject('child-graph-not-proven');
-     if(sequential){const childKey=sourceKey(child.filename);if(stack.has(childKey))reject('recursive-component-graph');let childPlan=sequentialCache.get(childKey);if(!childPlan){childPlan=analyzeVariant(child,{components,sequential:true,allowClosedSequential:true,primitiveProps:true,ancestry:new Set(stack),sequentialCache});sequentialCache.set(childKey,childPlan);}if(!childPlan.eligible)reject('sequential-composition-child-not-proven:'+childPlan.failures.join(','));const supplied=[];for(const prop of n.props){let value;try{value=proof(prop.expr);}catch(reason){if(typeof reason!=='string')throw reason;if(!openReference(prop.expr))reject('sequential-component-prop-not-proven');value=opaqueProof(prop.expr);}supplied.push({name:prop.name,read:value.read,opaque:value.opaque,locals:value.locals});}const handlers=[];for(const h of n.children){if(!child.events.some(event=>event.name===h.name))reject('handler-event-not-declared');const previousParameters=parameters;parameters=new Map(h.param?[[h.param,0]]:[]);try{
+     if(sequential){const childKey=sourceKey(child.filename);if(stack.has(childKey))reject('recursive-component-graph');let childPlan=sequentialCache.get(childKey);if(!childPlan){childPlan=analyzeVariant(child,{components,sequential:true,allowClosedSequential:true,primitiveProps:true,ancestry:new Set(stack),sequentialCache});sequentialCache.set(childKey,childPlan);}if(!childPlan.eligible)reject('sequential-composition-child-not-proven:'+childPlan.failures.join(','));const late=childPlan.actions.some(action=>action?.kind==='opaque-action')||childPlan.disposals.length>0;const supplied=[];for(const prop of n.props){if(late){supplied.push({name:prop.name,instanceRead:instanceProp(prop.expr)});continue;}let value;try{value=proof(prop.expr);}catch(reason){if(typeof reason!=='string')throw reason;value=opaqueProof(prop.expr);}supplied.push({name:prop.name,read:value.read,opaque:value.opaque,locals:value.locals});}const handlers=[];for(const h of n.children){if(!child.events.some(event=>event.name===h.name))reject('handler-event-not-declared');const previousParameters=parameters;parameters=new Map(h.param?[[h.param,0]]:[]);try{
       const e=parse(h.expr);let call;if(isEmit(e))call=emitCall(e);else if(e&&ts.isCallExpression(e)&&ts.isIdentifier(e.expression)&&actionNames.has(e.expression.text)&&!parameters.has(e.expression.text))call={kind:'action',action:actionNames.get(e.expression.text),args:e.arguments.map(arg=>opaqueProof(arg.getText())),parameters:[...parameters]};else reject('handler-call-not-proven');handlers.push({name:h.name,call});
      }finally{parameters=previousParameters;}}
      const index=composed.length;composed.push({parent,group,import:imp.path,source:child.filename,props:supplied,handlers});ops.push({kind:'component',index,group});opaqueCount++;return;}
@@ -249,10 +267,10 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const derivedCode=d=>{const lowered=d.opaque?options.lowerOpaque(d.opaque,d.locals,indexed):{param:'r',read:d.read};return `{slot:${d.slot},masks:${JSON.stringify(d.masks)},read:${lowered.param}=>(${lowered.read})}`;};
  const componentAliases=new Map(),componentImports=[];for(const c of plan.components??[]){if(!componentAliases.has(c.import)){const alias=fresh('__elnor_childRegion'+componentAliases.size);componentAliases.set(c.import,alias);const target=options.componentImports?.get(c.import);if(!target)throw Error('ELN-REGION: child module mapping missing');componentImports.push(`import {__elnor_renderRegion as ${alias}} from ${JSON.stringify(target)};`);}}
  const bridge=(plan.emitNames?.length??0)||(plan.components??[]).some(c=>c.handlers?.length),anchor=bridge?options.lowerOpaque('0',[],indexed).param:null;
- const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))||[...plan.actions,...(plan.disposals??[])].some(a=>a?.kind==='opaque-action'&&a.calls.length)?fresh(anchor+'_actions'):null;
+ const actionTable=(plan.components??[]).some(c=>c.handlers?.some(h=>h.call.kind==='action'))||[...plan.actions,...(plan.disposals??[]),...(plan.components??[]).flatMap(c=>c.props.map(p=>p.instanceRead).filter(Boolean))].some(a=>a?.kind==='opaque-action'&&a.calls.length)?fresh(anchor+'_actions'):null;
  const handlerFactory=c=>{const param=anchor+'_handler',alive=param+'_alive',args=param+'_args',values=param+'_values';return `(${param},${alive})=>({${c.handlers.map(h=>{const call=h.call,reads=call.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:call.parameters}).read);const run=call.kind==='action'?`const ${values}=[${reads.join(',')}];if(!${alive}())return;${actionTable}[${call.action}](${param},...${values});`:`${param}.emit[${JSON.stringify(call.name)}](${reads.join(',')});`;return `${JSON.stringify(h.name)}:(...${args})=>{if(!${alive}())return;${run}}`;}).join(',')}})`;};
  const emitFactory=plan.emitNames?.length?`${anchor}_packet=>({${plan.emitNames.map(name=>`${JSON.stringify(name)}:(...${anchor}_args)=>${anchor}_packet[${JSON.stringify(name)}]?.(...${anchor}_args)`).join(',')}})`:null;
- const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
+ const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{if(p.instanceRead)return `{name:${JSON.stringify(p.name)},instance:${JSON.stringify(p.instanceRead.instance)},read:${options.lowerOpaqueAction(p.instanceRead,{instance:instanceAlias??=fresh('__elnor_regionInstance'),table:actionTable})}}`;const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
  const initializerCode=s=>{const p=s.initialOpaque,lowered=p?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:s.initial};return `${lowered.param}=>(${lowered.read})`;};
  const actionCode=(body,index)=>{
   if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body,{instance:instanceAlias??=fresh('__elnor_regionInstance'),table:actionTable});

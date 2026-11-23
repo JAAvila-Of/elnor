@@ -36,8 +36,9 @@ example, a row of an `each` still needs a container as its root.
 ## Effect on real components
 
 The region selection was measured on 188 unique components from the
-repository examples and the private rehearsals. The backend accepted 28 of
-them before these two changes, 36 after the semantic containers, and 51 after
-the root change. The most frequent remaining blockers are an `on dispose`
-hook, async actions, closures or `new` in UI expressions, calls between
-actions, and child components rejected for one of these reasons.
+repository examples and the private rehearsals, with child components
+resolved from their directories as in a project build. The backend accepted 35
+of them before these two changes, 44 after the semantic containers and 64
+after the root change. An earlier count did not resolve child components,
+rejected every parent with children for that reason, and reported 28, 36 and
+51 instead.

@@ -133,3 +133,25 @@ and written by hooks, hooks that call actions and a throwing hook at unmount
 with the general renderer. The comparison builds the same components with
 `buildSurfaceProject(entry, {regionBackend: false})`, which compiles every
 component with the general renderer.
+
+## Props of child components
+
+A child component in a sequential region is mounted as its own region and
+reads its props through getters on the parent. A prop expression that the
+statement-level proof cannot lower is now evaluated as an opaque expression,
+with the same restrictions as other opaque expressions.
+
+A child with general actions, async actions or `on dispose` can read a prop
+after its parent instance closes, for example from a timer or a late result.
+Its props are therefore evaluated through the parent's instance handle,
+captured when the child mounts. While the parent is alive, reads go through
+the region and are tracked. After the parent's part closes, they read the
+handle's frozen values, as general-renderer getters read retained cells. This
+path also accepts callbacks and parent actions passed as props; assignments
+outside a callback keep fallback. A prop of such a child that reads a row item
+of an `each` keeps the general fallback, because the handle covers the
+component instance and not the row.
+
+`tests/region-child-props.test.mjs` compares object, function and computed
+props, a child action that reads props after a parent update, closures that
+read props after unmount, and callbacks with the general renderer.

@@ -71,13 +71,13 @@ export function mountRegion(target,plan,props,handlers=void 0){
 const regionInstanceMark=Symbol('regionInstance'),instancesWithoutState=new WeakMap();
 export function regionInstance(context,slot,group){
  if(context[regionInstanceMark])return context;
- if(slot<0){let instance=instancesWithoutState.get(context);if(!instance)instancesWithoutState.set(context,instance=createRegionInstance(context,null,context.props));return instance;}
+ if(slot<0){let instance=instancesWithoutState.get(context);if(!instance)instancesWithoutState.set(context,instance=createRegionInstance(context,null,context.props,context.emit));return instance;}
  const owner=context.owner?context.owner(slot):context,part=owner.parts[group];
- return part.instance??=createRegionInstance(owner,part,context.props);
+ return part.instance??=createRegionInstance(owner,part,context.props,context.emit);
 }
-function createRegionInstance(owner,part,props){
+function createRegionInstance(owner,part,props,emit){
  const cells=new Map(),actions=new Map();let frozen=null;
- const instance={[regionInstanceMark]:true,props,
+ const instance={[regionInstanceMark]:true,props,emit,
   cell(slot){
    let cell=cells.get(slot);
    // While the owner is being disposed and before the handle freezes, an
@@ -252,7 +252,7 @@ function mountTaskRegion(target,plan,config={}){
    else if(op.kind==='literal'){const node=region.refs[op.node],value=String(plan.nodes[op.node].value??'');if(node.nodeValue!==value)node.nodeValue=value;}
    else if(op.kind==='task')task(op.task);
    else if(op.kind==='event')event(op.event);
-   else if(op.kind==='dispose'){const hook=plan.disposals[op.index],instance=part.instance??=createRegionInstance(region,part,region.props);part.cleanups.push({dispose:()=>hook(instance)});}
+   else if(op.kind==='dispose'){const hook=plan.disposals[op.index],instance=part.instance??=createRegionInstance(region,part,region.props,region.emit);part.cleanups.push({dispose:()=>hook(instance)});}
    else if(runtimeLists&&op.kind==='list'){part.cleanups.push({list:op.index,node:op.node});task(op.task);}
    else if(op.kind==='branch'){part.cleanups.push({child:op.child,node:op.node});task(op.task);}
    else if(runtimeComponents&&op.kind==='component'){const spec=plan.components[op.index],props={};for(const p of spec.props){const source=p.instance?regionInstance(region,p.instance.slot,p.instance.group):region;Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(source)});};const resource={dispose:null};if(runtimeEmits)resource.active=true;const handlers=runtimeEmits&&spec.handlerFactory?spec.handlerFactory(region,()=>resource.active&&part.active&&!region.disposed):undefined;let childFrame=null;part.cleanups.push({component:resource});const childStage=(frame,dispose)=>{childFrame=frame;resource.dispose=dispose;if(region.disposed||!part.active){if(runtimeEmits)resource.active=false;resource.dispose=null;dispose();}};const host=spec.parent<0?parent:region.refs[spec.parent];if(runtimeEmits&&spec.handlerFactory)spec.render(host,props,childStage,handlers);else spec.render(host,props,childStage);if(spec.parent<0&&part.active&&!region.disposed)part.roots.push(...(childFrame?.parts?.[0]?.roots??[]));childFrame=null;}

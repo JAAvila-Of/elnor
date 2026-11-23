@@ -98,9 +98,9 @@ general-renderer cells, and never the new instance.
 after the branch reopens and a result after unmount with the general renderer.
 Action groups still use the general renderer.
 
-These bodies still keep the general fallback: `emit`, `this`,
-`arguments`, `super`, `new.target`, writes to closed collections, and prop
-reads in an inlined child instance.
+These bodies still keep the general fallback: `this`, `arguments`, `super`,
+`new.target`, writes to closed collections, and prop reads in an inlined child
+instance.
 
 `tests/region-general-actions.test.mjs` checks the selection and runs eight
 action shapes against the same expected views as the general renderer.
@@ -155,3 +155,22 @@ component instance and not the row.
 `tests/region-child-props.test.mjs` compares object, function and computed
 props, a child action that reads props after a parent update, closures that
 read props after unmount, and callbacks with the general renderer.
+
+## Events emitted by general actions
+
+A general or async action may call `emit` at any point, including after an
+`await` or before other statements. An action whose `emit` is not its last
+statement takes the general path instead of falling back. The emitter is read
+from the instance handle, captured when the handle is created.
+
+The general renderer calls the parent handler for every emit, also after the
+child's branch closed or the page unmounted. The region parent therefore
+builds the handlers of a child with general, async or `on dispose` code from
+its own instance handle, captured when the child mounts, without the liveness
+guard used for children whose emits are synchronous. A handler may call a
+parent action or assign parent state. A handler that reads a row item of an
+`each` keeps fallback for such a child.
+
+`tests/region-action-emits.test.mjs` compares emits while mounted, after an
+`await`, before other statements, after the child's branch closes and after
+unmount with the general renderer.

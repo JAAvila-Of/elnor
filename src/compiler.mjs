@@ -382,7 +382,7 @@ export function generate(ir,options={}){
    ...slots.map(([,slot,cell])=>`const ${cell} = ${handle}.cell(${slot});`),
    ...calls.map(([,index,reference])=>`const ${reference} = ${handle}.action(${table}, ${index});`)];
   const code=`${action.async?'async ':''}(${[ctx,...(action.params?[action.params]:[])].join(', ')}) => {\n${cells.join('\n')}\n${action.body.slice(1,-1)}\n}`;
-  const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${ctx}.emit`});
+  const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${handle}.emit`});
   const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('action.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
   if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: general action lowering failed');
   return sf.statements[0].expression.getText(sf);

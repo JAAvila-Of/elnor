@@ -26,7 +26,6 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
    if((!sequential&&own.events.length)||own.slots.length||(!sequential&&own.imports.some(i=>!i.typeOnly&&!i.path.endsWith('.eln'))))reject('component-boundary-not-proven');
    if(own.params.some(p=>!props.has(p.name)))reject('unproven-child-prop');
    const header=ts.createSourceFile('header.ts',own.header,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);if(header.statements.some(n=>!ts.isImportDeclaration(n)&&!ts.isInterfaceDeclaration(n)&&!ts.isTypeAliasDeclaration(n)))reject('runtime-header-not-proven');
-   if(own.ui.length!==1||own.ui[0].kind!=='container')reject('single-container-root-required');
    const instance=instances.length,slots=new Map(),calcSlots=new Map(),stateSlots=[],arrayStates=new Map(),locals=new Map();let dynamic=false;
    for(const s of own.states)if(ts.isArrayLiteralExpression(parse(s.expr))){let shape,closed=true;const inspect=node=>{try{return closedArray(node);}catch(reason){if(!sequential||typeof reason!=="string")throw reason;closed=false;return null;}};shape=inspect(parse(s.expr));
     for(const a of own.actions){const sf=ts.createSourceFile('array-action.ts',a.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);function scan(n){if(ts.isBinaryExpression(n)&&ts.isIdentifier(n.left)&&n.left.text===s.name&&n.operatorToken.kind===ts.SyntaxKind.EqualsToken){const next=inspect(n.right);if(next!==null){if(shape!==null&&next!==shape){if(!sequential)reject('collection-shape-change-not-proven');closed=false;}shape=next;}}ts.forEachChild(n,scan);}scan(sf);}
@@ -198,7 +197,7 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }
     reject('structural-or-opaque-node:'+n.kind);
    }
-   visit(own.ui[0],parent);stack.delete(key);
+   for(const root of own.ui)visit(root,parent);stack.delete(key);
   }
   component(ir,-1,sequential?new Map(ir.params.map(p=>[p.name,primitiveProps?{code:`r.props[${JSON.stringify(p.name)}]`,dependencies:new Set(),dynamic:true}:{opaque:true,code:null,dependencies:new Set()}])):new Map());
   if(sequential&&!allowClosedSequential&&!opaqueCount)reject('sequential-opaque-read-required');

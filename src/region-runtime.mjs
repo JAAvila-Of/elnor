@@ -78,8 +78,8 @@ export function regionCell(context,slot,group){
  return cell;
 }
 export function mountScalarRegion(target,plan){
- const doc=target.ownerDocument??document,{root,refs}=plan.instantiate(doc),size=plan.initializers?plan.initializers.length:plan.initial.length,words=Math.ceil(plan.bindings.length/32),resources=[];
- const region={disposed:false,initial:true,root,refs,bridges:null,values:plan.initializers?Array(size):plan.initial.slice(),dirty:new Uint32Array(words),spare:new Uint32Array(words),
+ const doc=target.ownerDocument??document,{root,roots=[root],refs}=plan.instantiate(doc),size=plan.initializers?plan.initializers.length:plan.initial.length,words=Math.ceil(plan.bindings.length/32),resources=[];
+ const region={disposed:false,initial:true,roots,refs,bridges:null,values:plan.initializers?Array(size):plan.initial.slice(),dirty:new Uint32Array(words),spare:new Uint32Array(words),
   read(slot){if(this.disposed)return;if(regionHasReader())trackGeneralRead(this,slot);return this.values[slot];},
   write(slot,next){if(this.disposed)return next;if(Object.is(this.values[slot],next))return next;this.values[slot]=next;
    const invalidations=plan.invalidations[slot];if(invalidations.length){for(const [word,mask] of invalidations)this.dirty[word]|=mask;enqueueRegionJob(this);}if(this.bridges?.[slot])this.bridges[slot].value=next;return next;},
@@ -96,13 +96,13 @@ export function mountScalarRegion(target,plan){
  function dispose(){
   if(region.disposed)return;region.disposed=true;cancelRegionJob(region);const failures=[];
   for(let i=resources.length-1;i>=0;i--){const {node,type,listener}=resources[i];try{node.removeEventListener(type,listener);}catch(error){failures.push(error);}}
-  resources.length=0;try{region.root.remove();}catch(error){failures.push(error);}finally{region.root=null;region.refs=null;region.values=null;region.bridges=null;region.dirty=null;region.spare=null;}
+  resources.length=0;for(const node of region.roots)try{node.remove();}catch(error){failures.push(error);}region.roots=null;region.refs=null;region.values=null;region.bridges=null;region.dirty=null;region.spare=null;
   errors(failures,'Multiple region disposal failures');
  }
  try{
   if(plan.initializers)for(let i=0;i<plan.initializers.length;i++)region.values[i]=plan.initializers[i](region);
   for(const event of plan.events){const node=refs[event.node],listener=runtimeSelect&&event.selectValue?()=>{if(node.selectedIndex>=0)region.write(event.slot,node.value);}:runtimeChecked&&event.type==='change'?()=>region.write(event.slot,node.checked):event.type==='input'?()=>region.write(event.slot,node.value):()=>(event.args?plan.actions[event.action](region,...event.args.map(read=>read(region))):plan.actions[event.action](region));if(runtimeForms&&(event.type==='submit'||event.type==='reset')){const resource={node,type:event.type,listener:e=>{if(region.disposed||(event.type==='reset'&&e.defaultPrevented))return;e.preventDefault();return listener();}};resources.push(resource);node.addEventListener(event.type,resource.listener);}else{resources.push({node,type:event.type,listener});node.addEventListener(event.type,listener);}}
-  region.run();target.append(root);return dispose;
+  region.run();target.append(...roots);return dispose;
  }catch(error){try{dispose();}catch(cleanupError){throw new AggregateError([error,cleanupError],'Region mount and cleanup failed',{cause:error});}throw error;}
 }
 

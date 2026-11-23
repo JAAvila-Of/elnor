@@ -1023,3 +1023,59 @@ test('the group signal is typed only inside members of its own group',t=>{
     assert.ok(checkSurfaceProject(file,{outputDir}).diagnostics.some(item=>item.code==='TS2339'&&/signal/.test(item.message)));
   }
 });
+
+test('a row component with its own group admits one invocation per row and runs rows in parallel',async t=>{
+  const {directory}=scope(t);
+  fs.writeFileSync(path.join(directory,'api.ts'),'export interface Item { id: number; name: string }\nexport interface Api { save(id: number): Promise<string> }\n');
+  fs.writeFileSync(path.join(directory,'Row.eln'),`import type { Item, Api } from "./api.js";
+
+component Row(item: Item, api: Api) {
+  calc id = item.id;
+  action group saving(id) single-flight
+
+  action async save() in saving {
+    return await api.save(id);
+  }
+
+  ui {
+    li {
+      p (save.status)
+      button disabled=(saving.pending) "Save" => save()
+    }
+  }
+}
+`);
+  const file=path.join(directory,'List.eln');
+  fs.writeFileSync(file,`import type { Item, Api } from "./api.js";
+import Row from "./Row.eln";
+
+component List(api: Api) {
+  state items: Item[] = [{id: 1, name: "One"}, {id: 2, name: "Two"}];
+
+  ui {
+    ul {
+      each item in items by item.id {
+        Row item=item api=api
+      }
+    }
+  }
+}
+`);
+  const outputDir=path.join(directory,'build');
+  const build=buildSurfaceProject(file,{outputDir,checkOutputDir:path.join(directory,'check')});
+  const module=await import(pathToFileURL(path.join(outputDir,build.entryOutput)));
+  setupDOM();
+  const root=new FakeNode('root'), calls=[], gates=[];
+  t.after(module.mount(root,{api:{save(id){calls.push(id);const gate=Promise.withResolvers();gates.push(gate);return gate.promise;}}}));
+  const [first,second]=root.descendants('button');
+  first.click();
+  first.click();
+  second.click();
+  await flush();
+  assert.deepEqual(calls,[1,2]);
+  assert.deepEqual(root.descendants('p').map(node=>node.textContent),['pending','pending']);
+  for(const gate of gates)gate.resolve('ok');
+  await flush();
+  await flush();
+  assert.deepEqual(root.descendants('p').map(node=>node.textContent),['success','success']);
+});

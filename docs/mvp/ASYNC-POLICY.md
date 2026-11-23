@@ -162,6 +162,34 @@ write, so writes still need an idempotency key when a retry is possible. Do
 not pass the signal to cleanup work: after retirement it is already aborted,
 while cleanup must still complete.
 
+### One action per row
+
+To let each row of a list run its own action, declare the group in a row
+component and use the row's key as the owner. Each instance then admits one
+invocation of its own, rows run in parallel, and each row shows its own
+`status`.
+
+```elnor
+component Row(item: Item, api: Api) {
+  calc id = item.id;
+  action group saving(id) single-flight
+
+  action async save() in saving {
+    return await api.save(id);
+  }
+
+  ui {
+    li {
+      p item.name
+      button disabled=(saving.pending) "Save" => save()
+    }
+  }
+}
+```
+
+The list component keeps no async action, so it stays in the region backend.
+Each row pays the general renderer cost described below.
+
 ### Cleanup after retirement
 
 Retirement never interrupts cleanup. Cleanup covers `finally` blocks, the

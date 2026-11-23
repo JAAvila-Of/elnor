@@ -121,11 +121,17 @@ The group exposes `pending`. Each member exposes readonly `pending`,
 `status`, `result`, and `error` properties. Checking for
 `status === "success"` gives access to the awaited return type in `result`.
 An execution failure is `unknown` in `error`. Awaiting a member call yields
-its return value on success and `undefined` if it was skipped, retired, or
-failed. Starting a new invocation clears that member's previous outcome.
+its return value on success and `undefined` if it was skipped, replaced,
+retired, or failed. Starting a new invocation clears that member's previous
+outcome.
 
 - `single-flight` admits one member at a time for the current owner.
 - `latest` admits the newest member and retires the previous invocation.
+- `keep-latest` lets the running invocation finish, then runs only the last
+  call made in the meantime, with that call's arguments. Each newer call
+  replaces the waiting one, which resolves to `undefined`. A call from a new
+  owner, or unmounting the component, drops the waiting call. This suits
+  autosave: the last edit is always saved, without one request per edit.
 - Changing the owner or unmounting the component retires its invocation.
   A direct state owner gets a new revision on every change, including a
   return to its original value within the same turn. Props and calcs use

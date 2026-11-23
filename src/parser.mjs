@@ -310,7 +310,7 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       const group={name:match[1],nameSpan:capture(match,1,pos),owner:match[2],ownerSpan:capture(match,2,pos),
         policy:match[3],policySpan:capture(match,3,pos),line:source.slice(0,pos).split('\n').length};
       if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
-        'Choose single-flight or latest as the action group policy');
+        'Choose single-flight, latest or keep-latest as the action group policy');
       actionGroups.push(group);pos+=match[0].length;continue;
     }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){

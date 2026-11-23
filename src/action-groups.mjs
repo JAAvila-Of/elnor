@@ -1,4 +1,4 @@
-export const actionGroupPolicies = ['single-flight', 'latest'];
+export const actionGroupPolicies = ['single-flight', 'latest', 'keep-latest'];
 
 // A member of the group also reads the AbortSignal of its own invocation.
 export const actionGroupType = '{readonly pending: boolean}';

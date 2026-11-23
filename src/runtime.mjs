@@ -245,11 +245,26 @@ export function createActionGroup(policy, readOwner, ownerScope) {
   let disposed = false;
   let owner;
   const records = new Set();
+  // keep-latest holds at most one call made while an invocation was running.
+  // A newer call, a new owner or disposal drops it, resolving to undefined.
+  let deferred;
+  const dropDeferred = () => {
+    const dropped = deferred;
+    deferred = undefined;
+    dropped?.resolve(undefined);
+  };
+  const startDeferred = () => {
+    const next = deferred;
+    deferred = undefined;
+    if (!next) return;
+    next.resolve(!disposed && !ownerScope.disposed && Object.is(next.owner, readOwner()) ? next.start() : undefined);
+  };
 
   function dispose() {
     disposed = true;
     active.value = null;
     for (const record of records) record.value = null;
+    dropDeferred();
   }
   ownerScope.own(dispose);
 
@@ -266,6 +281,12 @@ export function createActionGroup(policy, readOwner, ownerScope) {
       const currentOwner = readOwner();
       const previous = active.value;
       if (policy === 'single-flight' && previous && Object.is(owner, currentOwner)) return;
+      if (policy === 'keep-latest') {
+        dropDeferred();
+        if (previous && Object.is(owner, currentOwner)) {
+          return new Promise(resolve => { deferred = {owner:currentOwner, resolve, start:() => run.apply(this, args)}; });
+        }
+      }
       if (!Object.is(owner, currentOwner)) {
         owner = currentOwner;
         for (const other of records) other.value = null;
@@ -375,7 +396,10 @@ export function createActionGroup(policy, readOwner, ownerScope) {
         }
       } finally {
         stopWatching?.();
-        if (active.value === invocation) active.value = null;
+        if (active.value === invocation) {
+          active.value = null;
+          startDeferred();
+        }
       }
     }
 

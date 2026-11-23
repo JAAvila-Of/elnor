@@ -94,21 +94,42 @@ function analyzeVariant(ir,{components=new Map(),sequential=false,allowClosedSeq
     }}
     reject('action-expression-not-proven');
    }
+   // A general action body runs as written. It reads and writes this instance's
+   // state slots through the region, so it needs no statement-level proof.
+   // Receivers, other actions, emits and closed collections keep fallback.
+   function opaqueAction(fn){
+    const others=new Set(own.actions.map(a=>a.name));let invalid=null;
+    function scan(n){
+     if(n.kind===ts.SyntaxKind.ThisKeyword||n.kind===ts.SyntaxKind.SuperKeyword||ts.isMetaProperty(n))invalid??='opaque-action-receiver-not-proven';
+     if(ts.isIdentifier(n)){const parent=n.parent;if(!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n)){
+      if(n.text==='arguments')invalid??='opaque-action-receiver-not-proven';
+      if(others.has(n.text))invalid??='opaque-action-call-not-proven';
+      if(n.text==='emit')invalid??='opaque-action-emit-not-proven';
+      if(arrayStates.has(n.text))invalid??='opaque-action-collection-not-proven';
+      if(parentInstance!==null&&props.has(n.text))invalid??='opaque-action-child-props-not-proven';
+     }}
+     ts.forEachChild(n,scan);
+    }
+    for(const p of fn.parameters)scan(p);scan(fn.body);if(invalid)reject(invalid);opaqueCount++;
+    return {kind:'opaque-action',params:fn.parameters.map(p=>p.getText()).join(', '),body:fn.body.getText(),
+     states:[...slots],calcs:[...calcSlots],props:parentInstance===null?[...props.keys()]:[]};
+   }
    const actionNames=new Map();for(const action of own.actions){const sf=ts.createSourceFile('action.ts',action.functionSource,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS),fn=sf.statements[0];if(action.async||!ts.isFunctionDeclaration(fn)||!fn.body)reject('action-signature-not-proven');
     const nonempty=fn.body.statements.filter(n=>!ts.isEmptyStatement(n));if(nonempty.slice(0,-1).some(n=>ts.isExpressionStatement(n)&&isEmit(n.expression)))reject('nonterminal-emit-action-not-proven');
     parameters=new Map();for(const [index,p] of fn.parameters.entries()){if(!ts.isIdentifier(p.name)||p.dotDotDotToken||parameters.has(p.name.text)||slots.has(p.name.text)||calcSlots.has(p.name.text)||props.has(p.name.text))reject('action-signature-not-proven');parameters.set(p.name.text,index);}
-    const defaults=[];for(const [index,p] of fn.parameters.entries())if(p.initializer){
+    let defaults=[],body,context=null;try{for(const [index,p] of fn.parameters.entries())if(p.initializer){
      if(!sequential)reject('action-default-requires-sequential');const opaque=opaqueProof(p.initializer.getText());
      function scan(n){const parent=n.parent,reference=ts.isIdentifier(n)&&!(ts.isPropertyAccessExpression(parent)&&parent.name===n)&&!(ts.isPropertyAssignment(parent)&&parent.name===n);if(reference&&parameters.has(n.text)&&parameters.get(n.text)>=index)reject('action-default-forward-or-self-reference');ts.forEachChild(n,scan);}scan(p.initializer);
      defaults.push({index,opaque,parameters:[...parameters]});
     }
-    let body=fn.body.statements.map(statement),context=null;
+    body=fn.body.statements.map(statement);
     if(defaults.length||body.some(part=>typeof part!=='string')){
      const decoded=own.source.replace(/\\u(?:\{([\da-fA-F]{1,6})\}|([\da-fA-F]{4}))/g,(raw,braced,fixed)=>{const point=parseInt(braced??fixed,16);return point<=0x10ffff?String.fromCodePoint(point):raw;});
      const fresh=base=>{while(decoded.includes(base))base+='_';return base;};actionContext=fresh('__elnor_actionContext');argumentContext=fresh('__elnor_actionArguments');forceOpaque=true;
      body=fn.body.statements.map(statement);context={region:actionContext,args:argumentContext};
     }
-    actionNames.set(action.name,actions.length);actionParameters.push(parameters.size);actionContexts.push(context);actionDefaults.push(defaults);actions.push(context?body:body.join('\n'));parameters=new Map();actionContext='r';argumentContext='a';forceOpaque=false;
+    }catch(reason){if(!sequential||typeof reason!=='string')throw reason;defaults=[];context=null;body=opaqueAction(fn);}
+    actionNames.set(action.name,actions.length);actionParameters.push(parameters.size);actionContexts.push(context);actionDefaults.push(defaults);actions.push(body.kind||context?body:body.join('\n'));parameters=new Map();actionContext='r';argumentContext='a';forceOpaque=false;
    }
    function opaqueProof(code){const n=parse(code);if(!n)reject('invalid-expression');let invalid=false;const actionNames=new Set(own.actions.map(a=>a.name));
     function scan(node){const parent=node.parent,reference=ts.isIdentifier(node)&&!(ts.isPropertyAccessExpression(parent)&&parent.name===node)&&!(ts.isPropertyAssignment(parent)&&parent.name===node);if(reference){if(arrayStates.has(node.text)&&!parameters.has(node.text))invalid=true;const local=parameters.has(node.text)?null:locals.get(node.text);if(local&&!local.open&&local.fields!==null){if(!ts.isPropertyAccessExpression(parent)||parent.expression!==node||!local.fields.includes(parent.name.text))invalid=true;}}if(ts.isIdentifier(node)&&(['arguments','eval','Function'].includes(node.text)||(node.text==='emit'&&own.events.length&&!parameters.has('emit')&&!locals.has('emit')&&!slots.has('emit')&&!calcSlots.has('emit')&&!props.has('emit'))||actionNames.has(node.text)))invalid=true;
@@ -224,6 +245,7 @@ function regionDescriptor(ir,legacy,plan,options,fresh){
  const componentCode=c=>`{parent:${c.parent},render:${componentAliases.get(c.import)},props:[${c.props.map(p=>{const lowered=p.opaque?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:p.read};return `{name:${JSON.stringify(p.name)},read:${lowered.param}=>(${lowered.read})}`;}).join(',')}]${c.handlers?.length?`,handlerFactory:${handlerFactory(c)}`:''}}`;
  const initializerCode=s=>{const p=s.initialOpaque,lowered=p?options.lowerOpaque(p.opaque,p.locals,indexed):{param:'r',read:s.initial};return `${lowered.param}=>(${lowered.read})`;};
  const actionCode=(body,index)=>{
+  if(body?.kind==='opaque-action')return options.lowerOpaqueAction(body);
   const context=plan.actionContexts?.[index],param=context?.region??'r',args=context?.args??'a';
   const statements=Array.isArray(body)?body.map(part=>{
    if(typeof part==='string')return part;if(part.kind==='emit'){const argsCode=part.args.map(p=>options.lowerOpaque(p.opaque,p.locals,indexed,{context:param,args,parameters:part.parameters}).read);return `if(${param}.disposed)return;${param}.emit[${JSON.stringify(part.name)}](${argsCode.join(',')});`;}const lowered=options.lowerOpaque(part.opaque.opaque,part.opaque.locals,indexed,{context:param,args,parameters:part.parameters});

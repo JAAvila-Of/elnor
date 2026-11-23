@@ -361,7 +361,27 @@ export function generate(ir,options={}){
   const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('opaque.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
   if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: opaque expression lowering failed');return {param:ctx,read:sf.statements[0].expression.getText(sf)};
  };
- const mounted=attachRegion(ir,legacy,{...options,lowerOpaque});return options.ownedRegionPlan?attachRegion(ir,mounted,{...options,lowerOpaque,regionPlan:options.ownedRegionPlan,ownedExport:true}):mounted;
+ // A general action keeps its body. Each state it names becomes an accessor
+ // over its region slot, so reads, writes, compound assignments and closures
+ // behave as in the general renderer.
+ const lowerOpaqueAction=action=>{
+  const fresh=nameAllocator(ir.source+action.params+action.body),ctx=fresh('regionAction');
+  const named=([name])=>(action.params+action.body).includes(name);
+  const states=action.states.filter(named).map(([name,slot])=>[name,slot,fresh(`state_${name}`)]);
+  const read=slot=>()=>ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(ctx),'read'),undefined,[ts.factory.createNumericLiteral(slot)]);
+  const locals=new Map([
+   ...action.props.map(name=>[name,`${ctx}.props.${name}`]),
+   ...states.map(([name,,cell])=>[name,`${cell}.value`]),
+   ...action.calcs.filter(named).map(([name,slot])=>[name,read(slot)]),
+  ]);
+  const cells=states.map(([,slot,cell])=>`const ${cell} = {get value() { return ${ctx}.read(${slot}); }, set value(next) { ${ctx}.write(${slot}, next); }};`);
+  const code=`(${[ctx,...(action.params?[action.params]:[])].join(', ')}) => {\n${cells.join('\n')}\n${action.body.slice(1,-1)}\n}`;
+  const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${ctx}.emit`});
+  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('action.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: general action lowering failed');
+  return sf.statements[0].expression.getText(sf);
+ };
+ const mounted=attachRegion(ir,legacy,{...options,lowerOpaque,lowerOpaqueAction});return options.ownedRegionPlan?attachRegion(ir,mounted,{...options,lowerOpaque,lowerOpaqueAction,regionPlan:options.ownedRegionPlan,ownedExport:true}):mounted;
 }
 function scalarHotContract(ir,collections){
   if(ir.actions.some(action=>action.async))return undefined;

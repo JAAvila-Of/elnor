@@ -61,3 +61,36 @@ keeps its own indexed region plan, expression binder and ownership model.
 The [state initializer follow-up](REGION-BACKEND-STATE-INITIALIZERS.md) also
 admits external initial state values. Open collections, default parameters and
 component event boundaries remain separate admission work.
+
+## General synchronous action bodies
+
+A later change admits general synchronous action bodies in sequential regions.
+An action that the statement-level proof cannot lower no longer sends the
+component to the general renderer when its body stays within this subset:
+
+- local declarations, `if`, loops, `try`, `catch` and `finally`;
+- calls to props;
+- nested functions and closures, and local names that shadow state.
+
+The compiler keeps the body as written. Each state the action names becomes a
+small accessor over its region slot, so reads, writes, compound assignments
+and updates inside closures go through `read` and `write`. Calcs are read from
+their slots, and root props from the region props.
+
+These bodies still keep the general fallback: async actions, calls to other
+actions, `emit`, `this`, `arguments`, `super`, `new.target`, writes to closed
+collections, and prop reads in an inlined child instance.
+
+`tests/region-general-actions.test.mjs` checks the selection and runs eight
+action shapes against the same expected views as the general renderer.
+
+One difference remains. After the region is disposed, `read` returns
+`undefined`. A closure created by an action that reads state after the
+component unmounts, such as a timer, sees `undefined` where the general
+renderer returns the last value. Writes after disposal are ignored in both
+backends.
+
+The 19 components under `examples/` select the same backend as before. Each
+of them is rejected first by another rule, such as `on dispose`, a root with
+more than one container, opaque state, slot or event boundaries, or calls
+between actions.

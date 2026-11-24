@@ -58,8 +58,10 @@ and a future server half speak. The client half is implemented: a
 journal, sends it until the provider decides and resumes the body with the
 outcome after a reload. [DurableSave](../examples/durable-save/README.md)
 rewrites the recovery example in 66 nonblank lines instead of 196. Node.js
-tests cover it against a reference provider; acceptance in a browser has not
-run yet, and the server half waits for the server actions of CAP-08.
+tests cover it against a reference provider, and the
+[acceptance in headless Edge](mvp/DURABLE-INTENTS-DESIGN.md#results) passed
+in 7 of 8 runs, the other failing one check outside the journal. The server
+half waits for the server actions of CAP-08.
 
 ## 3. Verified guarantees
 

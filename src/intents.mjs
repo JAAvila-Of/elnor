@@ -392,9 +392,9 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
   const run = async (mode, operate) => {
     const database = await open();
     return new Promise((resolve, reject) => {
-      // A write is flushed to disk before it completes, because the journal
-      // sends an intent only after storing it: an intent the provider applied
-      // must not be lost to a crash of the system.
+      // A write asks the browser to flush it to disk before it completes,
+      // because the journal sends an intent only after storing it, and an
+      // intent the provider applied should survive a crash.
       const transaction = database.transaction(objectStore, mode, mode === 'readwrite' ? {durability: 'strict'} : undefined);
       const request = operate(transaction.objectStore(objectStore));
       transaction.oncomplete = () => resolve(request.result);

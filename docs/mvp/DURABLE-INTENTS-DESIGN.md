@@ -1,8 +1,8 @@
 # Durable intents design
 
-Status: the client half is implemented and covered by Node.js tests; the
-headless Edge acceptance below has not run yet, and the server half waits for
-CAP-08. [Durable intents](ASYNC-POLICY.md#durable-intents) describes the
+Status: the client half is implemented, covered by Node.js tests and accepted
+in headless Edge (see [results](#results)); the server half waits for CAP-08.
+[Durable intents](ASYNC-POLICY.md#durable-intents) describes the
 implemented behavior and [DurableSave](../../examples/durable-save/README.md)
 is the example.
 
@@ -278,10 +278,11 @@ The compiler recognizes durable operations by their type from that module.
 
 - The journal keeps the records of a scope in IndexedDB. A write completes
   its transaction before the scope's Web Lock is released, so the next tab to
-  take the lock reads it. Writes ask for strict durability, so a write is
-  flushed to disk before it completes and an intent stored before it was sent
-  survives a crash of the system; a browser without that option uses its
-  default. Other tabs hear of each change through a
+  take the lock reads it. Writes ask for strict durability, which asks the
+  browser to flush the write to disk before it completes, so the journal
+  stores an intent that way before the request is sent; a browser without
+  that option uses its default. A forced crash of the browser or of the
+  operating system with a pending intent has not been tested. Other tabs hear of each change through a
   `BroadcastChannel` and update what their components show. localStorage was
   rejected because it is not coherent across tabs: in headless Edge, two tabs
   of one profile each made 200 increments of one localStorage value, every one
@@ -309,8 +310,9 @@ The compiler recognizes durable operations by their type from that module.
 - `await journal.blocked()` gives the blocked records with the reason,
   `export()` for their stored text and `discard()`. Discarding is the only way
   to remove a blocked record, and until then its owner admits no new intent.
-- Admission takes a Web Lock per record, so two tabs cannot admit two intents
-  for the same owner. Both tabs may reconcile the same intent; the protocol
+- Every read-modify-write of a scope's records, admission included, runs
+  under one Web Lock per scope, so two tabs cannot admit two intents for the
+  same owner. Both tabs may reconcile the same intent; the protocol
   makes that safe.
 - Inputs and results must be JSON values, checked through the operation's
   types, and are frozen at admission.
@@ -412,8 +414,8 @@ any component with an action group.
 
 ## Security
 
-- The journal stores inputs in plain text in origin storage, readable by any
-  script of the origin. Secrets must not be durable inputs; the documentation
+- The journal stores inputs, parameters, owners, results and rejection reasons
+  in plain text in origin storage, readable by any script of the origin. Secrets must not be durable inputs; the documentation
   says so, and the compiler cannot know.
 - Intents are partitioned by scope and are only sent by a journal of that
   scope. Discarding a scope on logout loses its unsent writes, so the host
@@ -442,6 +444,26 @@ Edge against the reference provider:
   the host;
 - one outcome observed by two mounted instances and by two tabs;
 - a conflict reviewed and saved again with a new key.
+
+### Results
+
+The acceptance ran in headless Edge 157 at commit `9eed478`, against the
+reference provider. Of 8 contained runs, 7 passed all 19 checks and 1 passed
+18: its failing check was a socket buffer error while loading a static file
+during a tab reload, outside the journal. The checks covered the list above:
+lost replies with a reload, an outage, an unmount and an owner change, an
+outcome seen only by the host, two tabs on one owner, concurrent replays, an
+epoch change and an expired receipt, an account change, an operation version
+change and a discarded blocked record, one outcome seen by two instances and
+two tabs, and a conflict saved again.
+
+Two tabs that each made 200 increments of one counter under the Web Lock
+reached 400 of 400 in all 16 counts through IndexedDB, while localStorage lost
+up to 29. With an on-disk profile, strict durability and the CPU limited to
+10%, admission latency had a median between 50.6 and 65.5 ms and a p95
+between 98.7 and 210.4 ms. A forced kill of the browser with a pending intent
+was not tested. The changes made after that commit are covered by the Node.js
+tests.
 
 RecoverableSave rewritten with a durable group is the DX comparison. Its view
 and host setup must take at most half of the 196 nonblank lines of the

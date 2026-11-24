@@ -498,7 +498,9 @@ journal.start();
 - `await journal.outcomes()` gives the outcomes that no member consumed, each
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,
-  its owner admits no new intent.
+  its owner admits no new intent. In both, `owner` is the owner as JSON text,
+  such as `"t1"` with its quotes for the owner `t1`. Both reject when the
+  store cannot be read.
 - The operation's name and version are stored with the intent, and a record
   is never sent with another input shape. A record of an older version than
   the journal's is blocked. A record of a newer version, or of an operation
@@ -515,8 +517,8 @@ on its own.
 
 ### Security
 
-The journal stores inputs and parameters in plain text in origin storage,
-readable by any script of the origin. Secrets must not be durable inputs; the
+The journal stores inputs, parameters, owners, results and rejection reasons
+in plain text in origin storage, readable by any script of the origin. Secrets must not be durable inputs; the
 compiler cannot know which values are secret. A journal only reads and sends
 intents of its scope, and the scope is not an authentication boundary.
 
@@ -529,8 +531,8 @@ component with an action group.
 
 DurableSave and its host take 66 nonblank lines, against 196 for the
 handwritten view and client, below the limit of 98 that the design set. Its
-delivery, with `intents.mjs` (24031 bytes) and `durable-runtime.mjs` (7394
-bytes) counted, is 37667 JS bytes and 11652 gzip-9 bytes, summed over the
+delivery, with `intents.mjs` (27548 bytes) and `durable-runtime.mjs` (8260
+bytes) counted, is 42050 JS bytes and 12944 gzip-9 bytes, summed over the
 files. The handwritten version measured the same way on the same branch is
 15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
 reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude
@@ -541,6 +543,10 @@ lists what each version does.
 
 The behavior above is covered by Node.js tests, with a lock manager and an
 in-memory store passed by the test and, for components, a fake DOM. Node.js
-has no IndexedDB, so the IndexedDB store is only tested against a minimal fake
-of it. Acceptance in headless Edge against the reference provider, including
-reloads, two tabs and an account change, has not run yet.
+has no IndexedDB, so there the IndexedDB store is only tested against a
+minimal fake of it. The
+[acceptance in headless Edge](DURABLE-INTENTS-DESIGN.md#results) against the
+reference provider, including reloads, two tabs and an account change, passed
+all 19 checks in 7 of 8 runs; the other run failed one check on a socket error
+while loading a static file, outside the journal. A forced kill of the browser
+with a pending intent was not tested.

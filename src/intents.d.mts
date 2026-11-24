@@ -54,6 +54,7 @@ export function httpIntentTransport(options: HttpIntentTransportOptions): Intent
 export interface UnconsumedOutcome {
   readonly id: string;
   journal: string;
+  /** The owner as JSON text: `'"t1"'` for the owner `"t1"`. */
   owner: string;
   member: string;
   operation: string;
@@ -71,6 +72,7 @@ export interface UnconsumedOutcome {
 export interface BlockedRecord {
   readonly id: string;
   journal: string;
+  /** The owner as JSON text, or an empty string for a corrupt record. */
   owner: string;
   member: string;
   operation: string;

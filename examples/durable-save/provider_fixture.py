@@ -1,4 +1,6 @@
-"""Loopback-only HTTP/SQLite reference provider for durable intents; not an authenticated application server.
+"""HTTP/SQLite reference provider for durable intents: a test fixture, not a server.
+
+It binds 127.0.0.1 only, does not check the Host header and authenticates nobody.
 
 PUT /notes.save/{key} with Intent-Scope, Intent-Epoch and {"input": {"text", "revision"}}.
 The X-Fixture-Account header stands in for the session account.

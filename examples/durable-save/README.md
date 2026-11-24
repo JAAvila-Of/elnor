@@ -4,8 +4,9 @@
 written with a `durable` action group. The person sees the same thing: a
 draft, a Save button, a status label and a review step when someone else
 changed the note. `host.ts` creates the journal, the `notes.save` operation and
-its HTTP transport for one account. `provider_fixture.py` is the loopback-only
-SQLite reference provider for tests; it is not an authenticated server.
+its HTTP transport for one account. `provider_fixture.py` is the SQLite
+reference provider for tests. It binds 127.0.0.1 only and does not check the
+`Host` header or authenticate anyone, so it is a test fixture, not a server.
 
 The design is in [durable intents](../../docs/mvp/DURABLE-INTENTS-DESIGN.md),
 and the policy is described with the other groups in
@@ -60,9 +61,10 @@ create another journal for the next account. `await journal.forget()` removes
 the account's records in every tab, including writes that were never sent. The `X-Fixture-Account` header
 stands in for the session in this fixture. `journal.outcomes()` and
 `journal.blocked()` resolve to what no view consumed and what cannot be sent;
-the host decides what to show for them.
+the host decides what to show for them. Their `owner` is the owner as JSON
+text, `"note"` with its quotes here.
 
-## Running it
+## Building it and starting the provider
 
 ```sh
 npm run build:project -- examples/durable-save/DurableSave.eln --out .elnor/durable-save
@@ -100,20 +102,24 @@ The journal, the transport and the runtime have their own tests:
 [types](../../tests/durable-types.test.mjs) and
 [provider](../../tests/durable-provider.test.mjs). They run in Node.js with a
 lock manager and an in-memory store passed by the test; Node.js has no
-IndexedDB, so the IndexedDB store is only tested against a minimal fake of it.
-Acceptance in a browser, including two tabs, has not run yet.
+IndexedDB, so there the IndexedDB store is only tested against a minimal fake
+of it. In headless Edge 157 the
+[acceptance](../../docs/mvp/DURABLE-INTENTS-DESIGN.md#results), including two
+tabs, passed all 19 checks in 7 of 8 runs and 18 in the other, whose failure
+was a socket error while loading a static file, outside the journal. A forced
+kill of the browser with a pending intent was not tested.
 
 ## Comparison with the handwritten version
 
 | | RecoverableSave | DurableSave |
 | --- | --- | --- |
 | Nonblank lines of view and client or host | 60 + 136 = 196 | 45 + 21 = 66 |
-| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 37667, 11652 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 42050, 12944 |
 
 The byte counts were measured on this branch with the same method for both:
 the compiled view module and entry, plus the client or host transpiled by
-TypeScript. DurableSave also counts `intents.mjs` (24031 bytes, 7251 gzip-9)
-and `durable-runtime.mjs` (7394 bytes, 2608 gzip-9), which every durable
+TypeScript. DurableSave also counts `intents.mjs` (27548 bytes, 8307 gzip-9)
+and `durable-runtime.mjs` (8260 bytes, 2844 gzip-9), which every durable
 component of an application shares. `runtime.mjs` is left out of both. The
 [recovery journal](../../docs/mvp/RECOVERY-JOURNAL.md) reported 11039 JS bytes
 and 3815 gzip-9 for RecoverableSave with an earlier compiler. Neither number
@@ -121,15 +127,16 @@ is minified, and neither is a CPU measurement.
 
 DurableSave does more than the handwritten version: it resumes the outcome
 after a reload without a "Check result" button, reports outcomes and blocked
-records to the host, takes a lock per record at admission and pauses when the
-provider refuses the session's account.
+records to the host, admits under one lock per account scope and pauses when
+the provider refuses the session's account.
 
 ## Limits
 
 - The resume point of a member is its `await`. The editor does not mark it
   yet, and the language service has no hover or inlay hint for it.
-- The journal stores inputs and parameters in plain text in origin storage,
-  readable by any script of the origin. Do not pass secrets as durable inputs.
+- The journal stores inputs, parameters, owners, results and rejection reasons
+  in plain text in origin storage, readable by any script of the origin. Do
+  not pass secrets as durable inputs.
 - The group's `pending` is false for a blocked intent, and a call is refused
   while the owner's intent is pending or blocked. This view therefore disables
   Save with `saving.pending || save.status === "blocked"`.

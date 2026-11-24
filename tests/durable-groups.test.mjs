@@ -426,12 +426,33 @@ test('the members of a group need operations of one journal', t => {
     /must call operations of one journal/);
 });
 
-test('components without durable groups import no durable runtime symbol', async () => {
+function emittedFiles(build) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(build.outputDir, 'manifest.json'), 'utf8'));
+  return manifest.files.map(item => item.file.split('/').slice(2).join('/'));
+}
+
+function readEmitted(build, file) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(build.outputDir, 'manifest.json'), 'utf8'));
+  return fs.readFileSync(path.join(build.outputDir, 'builds', manifest.buildId, file), 'utf8');
+}
+
+test('a graph without durable groups emits no durable runtime and imports nothing from it', () => {
   const plainBuild = compile(directory, 'Counter', plain);
   const emitted = fs.readFileSync(plainBuild.entry, 'utf8');
   assert.match(emitted, /createActionGroup/);
-  assert.doesNotMatch(emitted, /createDurableGroup/);
-  const durableBuild = fs.readFileSync(compiled.entry, 'utf8');
-  assert.match(durableBuild, /createDurableGroup as /);
-  assert.doesNotMatch(durableBuild, /createActionGroup/);
+  assert.doesNotMatch(emitted, /createDurableGroup|durable-runtime/);
+  assert.ok(emittedFiles(plainBuild).includes('runtime.mjs'));
+  assert.ok(!emittedFiles(plainBuild).includes('durable-runtime.mjs'), emittedFiles(plainBuild).join(', '));
+  const runtime = readEmitted(plainBuild, 'runtime.mjs');
+  assert.doesNotMatch(runtime, /createDurableGroup/);
+});
+
+test('a graph with a durable group emits the durable runtime next to runtime.mjs and imports from it', () => {
+  const files = emittedFiles(compiled);
+  assert.ok(files.includes('runtime.mjs') && files.includes('durable-runtime.mjs'), files.join(', '));
+  const emitted = fs.readFileSync(compiled.entry, 'utf8');
+  assert.match(emitted, /import \{ createDurableGroup as \w+ \} from "\.{1,2}\/(?:\.\.\/)*durable-runtime\.mjs";/);
+  assert.doesNotMatch(emitted, /createActionGroup/);
+  const runtime = readEmitted(compiled, 'durable-runtime.mjs');
+  assert.match(runtime, /from '\.\/runtime\.mjs'/);
 });

@@ -188,7 +188,7 @@ test('a journal name is unique across the graph', () => {
 
 test('generating a durable group emits the journal group and its members', () => {
   const output = generate(parseSurface(component(), 'Editor.eln'));
-  assert.match(output, /createDurableGroup as (\w+)/);
+  assert.match(output, /import \{ createDurableGroup as \w+ \} from "\.\/durable-runtime\.mjs";/);
   const runtime = /createDurableGroup as (\w+)/.exec(output)[1];
   assert.ok(output.includes(`const editing = ${runtime}("task-edit", () => (`), output);
   assert.match(output, /const save = \(?editing\.member\("save", \(\) => \(\w+\.notes\.save\), \(edit\) => \(\w+\.notes\.save\)\(edit\), function \(outcome, edit\)/);

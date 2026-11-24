@@ -124,7 +124,7 @@ function groupOptions(group){
   const options=['capacity','timeout','debounce'].filter(name=>group[name]!==null).map(name=>`${name}: ${group[name]}`);
   return options.length?`, {${options.join(', ')}}`:'';
 }
-function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){
+function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',durableRuntimeImport='./durable-runtime.mjs',hot=false,hotLists,hotChild=false}={}){
   const diagnostics=validateComponent(ir);
   if(diagnostics.length)throw Object.assign(new Error(diagnostics.map(d=>`${d.code}: ${d.message}`).join('\n')),{diagnostics});
   const ordinaryPaths=runtimeModulePaths(projectSurface(ir.source,ir.filename));
@@ -144,7 +144,6 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   const ownerKeys=new Map(groups.filter(group=>group.owners.length!==1||group.owners[0].name===null).map(group=>[group.name,fresh('ownerKey')]));
   const runtime=Object.fromEntries([...(hasForm(ir.ui)?['formBinding']:[]),...(hasFieldError(ir.ui)?['fieldErrorBinding']:[]),...(hasAria(ir.ui)?['setAriaBoolean','ariaBooleanBinding']:[]),...(hasDisabled(ir.ui)?['setDisabled','disabledBinding']:[]),...(hasSelect(ir.ui)?['select']:[]),...(hasCheckbox(ir.ui)?['checkbox']:[]),...(hasTextarea(ir.ui)?['textarea']:[]),...(hasClasses(ir.ui)?['setClass','classBinding']:[]),...(hotLists?['runRegionUntracked']:[]),'cell','computed','uninitializedBinding','element','rootElement','text','button','literalText','literalButton','input','when','repeat','mountBoundary','renderComponent','createComponentRoot','renderSlot'].map(name=>[name,fresh(`runtime_${name}`)]));
   if(groups.length)runtime.createActionGroup=fresh('runtime_createActionGroup');
-  if(durableGroups.length)runtime.createDurableGroup=fresh('runtime_createDurableGroup');
   if(stateOwners.size)runtime.actionOwnerCell=fresh('runtime_actionOwnerCell');
   if(ownerKeys.size)runtime.actionOwnerKey=fresh('runtime_actionOwnerKey');
   const runtimeChildren=ir.imports.filter(i=>i.path.endsWith('.eln')&&!i.typeOnly);
@@ -152,6 +151,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   const detachedChildren=new Set(runtimeChildren.filter(i=>detachedImports.has(i.path)).map(i=>i.local));
   const fragment=(code,locals=new Map(),kind='expression')=>rewrite(ir,code,locals,kind,helpers);
   const ownerRead=owner=>stateOwners.has(owner.name)?`${helpers.state}.${owner.name}.revision`:fragment(owner.expr);
+  const createDurableGroup=durableGroups.length?fresh('runtime_createDurableGroup'):null;
   const managedActions=ir.actions.filter(action=>!durableMembers.has(action.name));
   const managedFactories=new Map(groups.length?managedActions.map(action=>[action.name,fresh('actionBody')]):[]);
   const managedBodies=groups.length?managedActions.map(action=>{
@@ -203,6 +203,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     '// Elnor Spike 003 generated output. Bounded experimental grammar.',
     ...ordinaryImports,
     `import {${Object.entries(runtime).map(([name,alias])=>`${name} as ${alias}`).join(',')}} from ${JSON.stringify(runtimeImport)};`,
+    ...(createDurableGroup?[`import {createDurableGroup as ${createDurableGroup}} from ${JSON.stringify(durableRuntimeImport)};`]:[]),
     ...runtimeChildren.map(x=>{
       const target=componentImports?componentImports.get(x.path):'./'+path.basename(x.path,'.eln')+'.mjs';
       if(!target)throw Error(`ELN-SURFACE-GRAPH: Missing component '${x.path}' in the emission graph`);
@@ -223,7 +224,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     }),
     ...durableGroups.map(group=>{
       const owner=group.owners.length===1?fragment(group.owners[0].expr):`[${group.owners.map(owner=>fragment(owner.expr)).join(', ')}]`;
-      return `    const ${group.name} = ${runtime.createDurableGroup}(${JSON.stringify(group.journal)}, () => (${owner}), ${helpers.scope});`;
+      return `    const ${group.name} = ${createDurableGroup}(${JSON.stringify(group.journal)}, () => (${owner}), ${helpers.scope});`;
     }),
     ...ir.actions.filter(action=>action.group&&!durableMembers.has(action.name)).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
     ...durableBodies,
@@ -520,7 +521,7 @@ function prepareGraph(graph,{hotEntry,regionBackend=false}={}){
     // The hot experiment emits general code but uses the region analysis as
     // its proof of a static shape, so it runs even when regions do not emit.
     :hotRoot?hotExperiment(hotRoot,regionBackend?regionPlans.get(hotEntry):analyzeRegion(hotRoot,{components:sources}),sources):undefined;
-  let regionUsed=false;
+  let regionUsed=false,durableUsed=false;
   for(const ir of records){
     const key=sourceKey(ir.filename),filename=outputs.get(key).file;
     const moduleImports=planned?.get(ir)??planImports(ir);
@@ -538,10 +539,13 @@ function prepareGraph(graph,{hotEntry,regionBackend=false}={}){
     const isEntry=hotEntry===key,hotChild=experiment?.childKeys?.has(key);
     const hot=Boolean(experiment&&(isEntry||hotChild));
     regionUsed ||= regionPlan.eligible&&!hot;
-    files.set(filename,generate(ir,{moduleImports,componentImports,detachedImports,regionPlan,hot,hotChild,hotLists:isEntry?experiment?.hotLists:undefined,ownedRegionPlan:ownedPlans.get(key),regionRuntimeImport:moduleSpecifier(filename,'region-runtime.mjs'),runtimeImport:moduleSpecifier(filename,'runtime.mjs')}));
+    durableUsed ||= ir.actionGroups.some(group=>group.policy==='durable');
+    files.set(filename,generate(ir,{moduleImports,componentImports,detachedImports,regionPlan,hot,hotChild,hotLists:isEntry?experiment?.hotLists:undefined,ownedRegionPlan:ownedPlans.get(key),regionRuntimeImport:moduleSpecifier(filename,'region-runtime.mjs'),runtimeImport:moduleSpecifier(filename,'runtime.mjs'),durableRuntimeImport:moduleSpecifier(filename,'durable-runtime.mjs')}));
   }
   for(const [filename,code] of sharedModules??planner.files())files.set(filename,code);
   files.set('runtime.mjs',fs.readFileSync(path.join(ROOT,'src/runtime.mjs'),'utf8'));
+  // Durable groups have their own runtime, emitted only when a component uses one.
+  if(durableUsed)files.set('durable-runtime.mjs',fs.readFileSync(path.join(ROOT,'src/durable-runtime.mjs'),'utf8'));
   let regionRuntime=null;
   if(regionUsed){
     const plans=[...regionPlans.values(),...ownedPlans.values()].filter(p=>p.eligible),features={forms:plans.some(p=>p.events.some(e=>e.type==='submit')),select:plans.some(p=>p.bindings.some(b=>b.kind==='select')),checked:plans.some(p=>p.bindings.some(b=>b.kind==='checked')),aria:plans.some(p=>p.bindings.some(b=>b.kind==='ariaBoolean')||p.nodes.some(n=>n.ariaBooleans)),disabled:plans.some(p=>p.bindings.some(b=>b.kind==='disabled')||p.nodes.some(n=>n.disabled!==undefined)),classes:plans.some(p=>p.bindings.some(b=>b.kind==='class')||p.nodes.some(n=>n.tag==='input'&&n.className)),lists:plans.some(p=>p.lists.length>0),components:plans.some(p=>p.components.length>0),blueprint:plans.some(p=>p.mode!=='sequential'),emits:plans.some(p=>p.emitNames?.length||(p.components??[]).some(c=>c.handlers?.length))};

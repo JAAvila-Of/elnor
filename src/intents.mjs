@@ -44,6 +44,10 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
   });
   const valid = item => wellFormed(item, scope);
   const find = (state, key, phase) => state.unreadable === null ? state.records.find(item => valid(item) && item.key === key && item.state === phase) : undefined;
+  const owned = (state, journal, owner) => state.records.filter(item => item?.journal === journal && item?.owner === owner);
+  // The record an owner's members observe: a blocked or unreadable one first,
+  // then the pending one, then the oldest terminal one.
+  const observed = records => records.find(item => !valid(item) || item.state === 'blocked') ?? records.find(item => item.state === 'pending') ?? records.find(item => item.state === 'terminal');
   const outcomeOf = record => ({...record.outcome, late: record.admittedBy !== instance});
   const view = item => {
     if (!valid(item)) return {id: corruptId(JSON.stringify(item)), member: '', state: 'blocked', params: []};
@@ -55,7 +59,7 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     let current = null;
     if (state.unreadable !== null) current = {id: corruptId(state.unreadable), member: '', state: 'blocked', params: []};
     else {
-      const item = state.records.find(item => item?.journal === watcher.journal && item?.owner === watcher.owner);
+      const item = observed(owned(state, watcher.journal, watcher.owner));
       if (item !== undefined) current = view(item);
     }
     const text = JSON.stringify(current);
@@ -177,7 +181,8 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
       try {
         key = await exclusive(() => {
           const state = read();
-          if (state.unreadable !== null || state.records.some(item => item?.journal === journal && item?.owner === owner)) return undefined;
+          // Unconsumed outcomes do not hold the owner back; a pending or blocked record does.
+          if (state.unreadable !== null || owned(state, journal, owner).some(item => !valid(item) || item.state !== 'terminal')) return undefined;
           const record = {
             format: 1, journal, scope, owner, member, operation, version, key: createKey(), epoch: state.epoch,
             params: frozen.params, input: frozen.input, state: 'pending', admittedBy: instance
@@ -194,7 +199,8 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     consume(id, deliver) {
       return exclusive(() => {
         const state = read(), record = find(state, id, 'terminal');
-        if (!record) return false;
+        // The outcomes of one owner are consumed in admission order.
+        if (!record || owned(state, record.journal, record.owner).find(item => valid(item) && item.state === 'terminal') !== record) return false;
         let failure;
         try { deliver(view(record)); } catch (error) { failure = {error}; }
         // A failing handler still counts as delivered, so it does not run again.

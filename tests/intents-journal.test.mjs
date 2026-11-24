@@ -70,8 +70,7 @@ async function settle() {
   for (let turn = 0; turn < 20; turn++) await tick();
 }
 
-function setup({storage = memoryStorage(), locks = serialLocks(), answers = [], version = 1, retry, start = true} = {}) {
-  const transport = scriptedTransport(answers);
+function setup({storage = memoryStorage(), locks = serialLocks(), answers = [], transport = scriptedTransport(answers), version = 1, retry, start = true} = {}) {
   const journal = createIntentJournal({storage, scope: 'alice', locks, createKey: keys(), retry});
   const update = journal.operation('tasks.update', {version, transport});
   const hook = update[durable].journal;
@@ -151,6 +150,27 @@ test('another owner or another journal is admitted while one owner is pending', 
   assert.equal(stored(storage).records.length, 3);
 });
 
+test('an unconsumed outcome does not hold back a new intent for its owner', async () => {
+  const {storage, transport, hook} = setup({storage: seeded([]), answers: [applied('E1', {revision: 2}), applied('E1', {revision: 3})]});
+  const views = [];
+  hook.watch('task-edit', '"t1"', view => views.push(view && [view.id, view.state]));
+  const first = await hook.admit(entry());
+  await until(() => stored(storage).records[0].state === 'terminal', 'the first outcome');
+  const second = await hook.admit(entry({input: {title: 'Again'}}));
+  assert.equal(second, 'k2');
+  assert.deepEqual(views.at(-1), ['k2', 'pending']);
+  await until(() => stored(storage).records.every(item => item.state === 'terminal'), 'the second outcome');
+  assert.deepEqual(transport.requests.map(request => request.key), ['k1', 'k2']);
+  assert.deepEqual(views.at(-1), ['k1', 'terminal']);
+  const delivered = [];
+  assert.equal(await hook.consume(second, view => delivered.push(view.id)), false, 'a newer outcome waits for the older one');
+  assert.equal(await hook.consume(first, view => delivered.push(view.id)), true);
+  assert.deepEqual(views.at(-1), ['k2', 'terminal']);
+  assert.equal(await hook.consume(second, view => delivered.push(view.outcome.result.revision)), true);
+  assert.deepEqual(delivered, ['k1', 3]);
+  assert.deepEqual(views, [null, ['k1', 'pending'], ['k1', 'terminal'], ['k2', 'pending'], ['k1', 'terminal'], ['k2', 'terminal'], null]);
+});
+
 test('a first request without epoch is stamped by the 412 and resent', async () => {
   const {storage, transport, hook} = setup({answers: [{kind: 'epoch', epoch: 'E1'}, applied('E1')]});
   await hook.admit(entry());
@@ -168,6 +188,31 @@ test('a new intent is stamped with the epoch the journal knows', async () => {
   await hook.admit(entry());
   await until(() => stored(storage).records[0].state === 'terminal', 'the outcome');
   assert.deepEqual(transport.requests.map(request => request.epoch), ['E7']);
+});
+
+test('a stamp written by another tab while a request was out is not taken as a restamp', async () => {
+  const storage = memoryStorage(), locks = serialLocks(), held = Promise.withResolvers();
+  let unstamped = 0;
+  const transport = scriptedTransport();
+  transport.send = request => {
+    transport.requests.push(request);
+    if (request.epoch !== null) return Promise.resolve(applied('E1'));
+    if (++unstamped === 2) held.resolve();
+    return held.promise.then(() => ({kind: 'epoch', epoch: 'E1'}));
+  };
+  const first = setup({storage, locks, transport});
+  const second = setup({storage, locks, transport, start: false});
+  await first.hook.admit(entry());
+  await until(() => transport.requests.length === 1, 'the first request');
+  second.journal.start();
+  await until(() => stored(storage).records[0].state !== 'pending', 'a decision');
+  await settle();
+  const [item] = stored(storage).records;
+  assert.equal(item.state, 'terminal');
+  assert.equal(item.reason, undefined);
+  assert.deepEqual(transport.requests.slice(0, 2).map(request => request.epoch), [null, null]);
+  assert.ok(transport.requests.length > 2);
+  assert.ok(transport.requests.slice(2).every(request => request.epoch === 'E1'));
 });
 
 test('a stamped intent is never restamped', async () => {

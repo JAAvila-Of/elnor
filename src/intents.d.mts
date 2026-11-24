@@ -40,6 +40,16 @@ export interface IntentTransport {
   send(request: {operation: string; key: string; scope: string; epoch: string | null; input: unknown; signal: AbortSignal}): Promise<TransportAnswer>;
 }
 
+export interface HttpIntentTransportOptions {
+  baseUrl: string;
+  fetch?: typeof fetch;
+  /** Extra headers for every request, such as the host's session headers. */
+  headers?: () => Record<string, string>;
+}
+
+/** Sends each intent as PUT {baseUrl}/{operation}/{key} with the scope and epoch headers. */
+export function httpIntentTransport(options: HttpIntentTransportOptions): IntentTransport;
+
 /** A terminal record that no member has consumed. */
 export interface UnconsumedOutcome {
   readonly id: string;

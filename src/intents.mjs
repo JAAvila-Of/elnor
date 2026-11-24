@@ -279,6 +279,48 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
   };
 }
 
+// A transport that sends each intent to the provider with PUT
+// {baseUrl}/{operation}/{key}. `headers` adds the host's session headers on
+// every request. Answers outside the protocol, network failures, 404 and 5xx
+// leave the intent pending; a body that is not JSON or echoes another scope,
+// key or epoch blocks it.
+export function httpIntentTransport({baseUrl, fetch: send = globalThis.fetch, headers = () => ({})} = {}) {
+  if (typeof baseUrl !== 'string' || !baseUrl) throw new TypeError('An HTTP transport needs a base URL');
+  const base = baseUrl.replace(/\/+$/, '');
+  return {
+    async send({operation, key, scope, epoch, input, signal}) {
+      let response, body;
+      try {
+        response = await send(`${base}/${encodeURIComponent(operation)}/${encodeURIComponent(key)}`, {
+          method: 'PUT', cache: 'no-store', signal, body: JSON.stringify({input}),
+          headers: {...headers(), 'Content-Type': 'application/json', 'Intent-Scope': scope, ...(epoch !== null && {'Intent-Epoch': epoch})}
+        });
+        if (response.status === 404 || response.status >= 500) return {kind: 'retry'};
+        try { body = await response.json(); } catch (error) { if (signal?.aborted) throw error; }
+      } catch {
+        return {kind: 'retry'};
+      }
+      return mapResponse(response.status, body, {scope, key, epoch});
+    }
+  };
+}
+
+function mapResponse(status, body, {scope, key, epoch}) {
+  const known = [200, 403, 409, 412, 422].includes(status);
+  if (!known) return {kind: 'retry'};
+  if (!body || typeof body !== 'object' || Array.isArray(body) || body.scope !== scope || body.key !== key) return {kind: 'mismatch'};
+  const state = body.status;
+  if (status === 412 && typeof body.epoch === 'string') return {kind: 'epoch', epoch: body.epoch};
+  if (status === 409 && state === 'key-conflict') return {kind: 'key-conflict'};
+  if (status === 403 && state === 'scope-refused') return {kind: 'scope-refused'};
+  const decided = status === 200 ? ['applied', 'rejected', 'unavailable'] : status === 422 ? ['rejected'] : [];
+  if (!decided.includes(state)) return {kind: 'retry'};
+  if (body.epoch !== epoch) return {kind: 'mismatch'};
+  if (state === 'applied') return {kind: state, epoch: body.epoch, result: body.result};
+  if (state === 'rejected') return {kind: state, epoch: body.epoch, reason: body.reason};
+  return {kind: state, epoch: body.epoch};
+}
+
 // The next record and journal epoch after one answer from the transport, and
 // what the journal does next: send again, wait for a retry, pause the scope,
 // or nothing because the record is decided or blocked.

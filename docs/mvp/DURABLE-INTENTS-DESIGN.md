@@ -328,7 +328,10 @@ The compiler recognizes durable operations by their type from that module.
 - `start` reconciles every stored intent of the scope, whether or not a
   component for it is mounted, so a write is completed even if the person never
   returns to that screen. It runs again when the browser reports a connection
-  and with bounded backoff after a failure.
+  and with bounded backoff after a failure. If the store cannot be read, for
+  example an IndexedDB open that times out, it retries reconciliation with the
+  same backoff, growing to `maxMs`, and keeps retrying every `maxMs` until
+  `stop()`.
 - `await journal.outcomes()` gives the terminal records that no member has
   consumed, for example to show a notification, and each one has
   `acknowledge()`. A rejected write is therefore never dropped without being
@@ -396,8 +399,8 @@ of three effects.
 
 - It blocks the record when the answer may mean that the intent was applied
   and the journal cannot tell what happened: a `200`, `412` or `422` whose body
-  is not JSON or does not echo the scope and key; a `200` or `422` that echoes
-  another epoch; a `409` whose body is protocol JSON with
+  is not JSON or does not echo the scope and key; a `200` or `422` that decides
+  the intent but echoes another epoch; a `409` whose body is protocol JSON with
   `"status": "key-conflict"` and that echoes another scope, key or epoch
   (reason `mismatch`); a `409` with that body and the right echo, which is a
   key conflict; and a `412` for a stamped intent, which is an epoch mismatch.
@@ -409,8 +412,9 @@ of three effects.
 - It leaves the intent pending and sends it again, with backoff, after a
   network failure, a `404`, a `5xx`, a `409` whose body is not protocol JSON,
   a `412` without an epoch, a `200` or `422` with a status that does not
-  decide the intent, and any other status code. None of them is an answer
-  from the protocol, so none can have applied it.
+  decide the intent (even with another epoch), and any other status
+  code. None of them is an answer from the protocol, so none can have applied
+  it.
 
 A protocol `409` is the only `409` that blocks: one from a proxy or an
 endpoint outside the protocol retries, because it applied nothing.

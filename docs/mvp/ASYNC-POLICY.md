@@ -513,12 +513,17 @@ journal.start();
   Any `403` pauses the scope this way: the intent stays pending, the journal
   stops sending and `onPaused` reports it.
 - The HTTP transport blocks a record on a `200`, `412` or `422` whose body is
-  not JSON or does not echo the scope and key, on an echo of another epoch, on
-  a `412` for an intent already stamped with another epoch, and on a `409`
-  whose body is protocol JSON with `"status": "key-conflict"`: a matching echo
-  is a key conflict and a wrong scope, key or epoch is a mismatch. It retries
-  after a network failure, a `404`, a `5xx`, a `409` that is not protocol
-  JSON, a `412` without an epoch and any other status code.
+  not JSON or does not echo the scope and key, on a `200` or `422` that
+  decides the intent but echoes another epoch, on a `412` for a stamped
+  intent, and on a `409` whose body is protocol JSON with
+  `"status": "key-conflict"`: a matching echo is a key conflict and a wrong
+  scope, key or epoch is a mismatch. It retries after a network failure, a
+  `404`, a `5xx`, a `409` that is not protocol JSON, a `412` without an
+  epoch, a `200` or `422` whose status does not decide the intent (even with
+  another epoch) and any other status code.
+- When the store cannot be read, for example an IndexedDB open that times
+  out, the journal retries reconciliation with the same backoff, growing to
+  `maxMs`, and keeps retrying every `maxMs` until `stop()`.
 - `await journal.outcomes()` gives the outcomes that no member consumed, each
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,

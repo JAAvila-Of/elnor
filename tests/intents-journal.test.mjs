@@ -478,6 +478,48 @@ test('start reconciles when the browser reports a connection', async t => {
   assert.equal(listeners.has('storage'), false);
 });
 
+test('a reconciliation whose read fails is retried with the backoff while the journal runs', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const storage = seeded([record()]), read = storage.read;
+  let failures = 2;
+  storage.read = async key => {
+    if (failures > 0) {
+      failures--;
+      throw new DOMException('Opening the intent database took too long', 'TimeoutError');
+    }
+    return read(key);
+  };
+  const {transport, journal} = setup({storage, answers: [applied('E1')], retry: {firstMs: 1000, maxMs: 60000}});
+  await settle();
+  assert.equal(failures, 1);
+  t.mock.timers.tick(999);
+  await settle();
+  assert.equal(failures, 1);
+  t.mock.timers.tick(1);
+  await settle();
+  assert.equal(failures, 0, 'the second reconciliation reads again and fails');
+  assert.equal(transport.requests.length, 0);
+  t.mock.timers.tick(1999);
+  await settle();
+  assert.equal(transport.requests.length, 0, 'the backoff doubles');
+  t.mock.timers.tick(1);
+  await until(() => stored(storage).records[0].state === 'terminal', 'the outcome of the pending intent');
+  assert.deepEqual(transport.requests.map(request => request.key), ['old']);
+
+  // A journal that stops retries nothing more.
+  const failing = seeded([record()]);
+  let reads = 0;
+  failing.read = async () => { reads++; throw new DOMException('Access is denied.', 'SecurityError'); };
+  const other = setup({storage: failing, retry: {firstMs: 1000, maxMs: 60000}});
+  await settle();
+  assert.equal(reads, 1);
+  other.journal.stop();
+  t.mock.timers.tick(120000);
+  await settle();
+  assert.equal(reads, 1);
+  journal.stop();
+});
+
 test('watch reports the record of one owner as it changes', async () => {
   const {storage, hook, journal} = setup({storage: seeded([]), answers: [applied('E1')], start: false});
   const views = [];
@@ -738,6 +780,8 @@ test('a write that rejects refuses admission, sends nothing and is reported', as
   const unreadable = memoryIntentStore();
   unreadable.read = async () => { throw new DOMException('Access is denied.', 'SecurityError'); };
   const other = setup({storage: unreadable});
+  // A running journal retries its failed reconciliation.
+  t.after(() => other.journal.stop());
   const seen = [];
   other.hook.watch('task-edit', '"t1"', view => seen.push(view));
   assert.equal(await other.hook.admit(entry()), undefined);

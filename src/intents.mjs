@@ -43,6 +43,8 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   // A journal that was stopped admits nothing until it starts again; one that
   // never started admits, so a host can mount views before calling start.
   let running = false, stopped = false, paused = false, unsubscribe;
+  // A reconciliation whose read or write failed is retried with the backoff.
+  let reconcileTimer, reconcileAttempt = 0;
   // Each read for watchers and each committed write takes a ticket in order.
   // Watchers only see a state whose ticket is newer than the last one shown,
   // so a read that started before a write never shows the older records.
@@ -125,13 +127,13 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     if (!running || waiting.has(key)) return;
     const attempt = (attempts.get(key) ?? 0) + 1;
     attempts.set(key, attempt);
-    const delay = Math.min(retry.firstMs * 2 ** (attempt - 1), retry.maxMs);
     waiting.set(key, setTimeout(() => {
       waiting.delete(key);
       adopted.delete(key);
       drive(key);
-    }, delay));
+    }, backoff(attempt)));
   };
+  const backoff = attempt => Math.min(retry.firstMs * 2 ** (attempt - 1), retry.maxMs);
 
   // Sends one pending record until the provider decides it, the scope pauses,
   // a retry waits, or the journal stops. An answer that arrives after stop is
@@ -202,6 +204,8 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   // journal does not know, was admitted by a newer release in another tab:
   // it stays pending, unsent, for a tab that knows it.
   async function reconcile() {
+    clearTimeout(reconcileTimer);
+    reconcileTimer = undefined;
     let keys;
     try {
       keys = await exclusive(async () => {
@@ -219,8 +223,16 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
         return records.filter(item => valid(item) && item.state === 'pending' && sendable(item)).map(item => item.key);
       });
     } catch {
+      // Storage failed, for example an IndexedDB open that timed out at
+      // start; without a retry the stored intents would wait for a
+      // connection event or a reload.
+      if (running) {
+        clearTimeout(reconcileTimer);
+        reconcileTimer = setTimeout(reconcile, backoff(++reconcileAttempt));
+      }
       return;
     }
+    reconcileAttempt = 0;
     for (const key of keys) drive(key);
   }
 
@@ -229,6 +241,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     waiting.clear();
     attempts.clear();
     adopted.clear();
+    reconcileAttempt = 0;
     reconcile();
   };
   // Another tab committed a write or a removal.
@@ -326,6 +339,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       waiting.clear();
       attempts.clear();
       adopted.clear();
+      clearTimeout(reconcileTimer);
+      reconcileTimer = undefined;
+      reconcileAttempt = 0;
     },
     async outcomes() {
       const state = await read();

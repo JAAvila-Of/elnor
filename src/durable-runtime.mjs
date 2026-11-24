@@ -73,6 +73,9 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     const member = members.get(view.member);
     // A renamed member has no consumer here; the host sees the outcome.
     if (!member || consuming.has(view.id)) return;
+    // A member whose prop now names another journal's operation is not a
+    // consumer of this one: the outcome stays for a component that is.
+    if (journalOf(member) !== hook) return settle(view.id, undefined);
     consuming.add(view.id);
     let ran = false, value, failure;
     const deliver = record => {
@@ -82,7 +85,7 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     };
     // An instance whose owner changed or that was disposed while it waited for
     // the lock leaves the outcome to the next one.
-    const accept = () => !ownerScope.disposed && untracked(ownerKey) === key;
+    const accept = () => !ownerScope.disposed && untracked(ownerKey) === key && journalOf(member) === hook;
     hook.consume(view.id, deliver, accept).then(consumed => {
       if (failure) reportActionFailure(failure.error);
       settle(view.id, consumed ? value : undefined);
@@ -122,6 +125,10 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     settleAll();
   });
 
+  // The journal of the operation a member's prop names now. Props are live,
+  // so a host can point them at another journal without remounting.
+  const journalOf = member => untracked(member.read)?.[durableHook]?.journal;
+
   const visible = name => {
     start();
     const entry = shown.value;
@@ -135,7 +142,7 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     if (!operation?.journal) throw new TypeError(`The durable member '${name}' must call an operation created with journal.operation`);
     if (hook && operation.journal !== hook) throw new TypeError(`The members of the durable group '${journal}' must call operations of one journal`);
     hook = operation.journal;
-    members.set(name, {resume});
+    members.set(name, {read:readOperation, resume});
 
     // Resolves with the body's return value when this instance consumes the
     // outcome in this page, and with undefined when the call is refused or the
@@ -144,8 +151,12 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
       if (ownerScope.disposed) return;
       start();
       const key = untracked(ownerKey);
+      // The group watches one journal; a call through another journal's
+      // operation would store the intent where nothing observes it.
+      const current = untracked(readOperation)?.[durableHook];
+      if (current?.journal !== hook) throw new TypeError(`The durable member '${name}' must call operations of the journal its group watches`);
       const requested = untracked(() => request(...params));
-      if (requested?.operation !== operation.name) throw new TypeError(`The durable member '${name}' must call the operation it was mounted with`);
+      if (current !== operation || requested?.operation !== operation.name) throw new TypeError(`The durable member '${name}' must call the operation it was mounted with`);
       const id = await hook.admit({journal, owner:key, member:name, operation:operation.name, version:operation.version, params, input:requested.input});
       if (id === undefined || ownerScope.disposed || key !== owner) return;
       // The outcome needs at least one more lock grant, which comes after

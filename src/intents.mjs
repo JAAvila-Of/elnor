@@ -32,7 +32,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
   const inFlight = new Map(), waiting = new Map(), attempts = new Map();
-  let running = false, paused = false, unsubscribe;
+  // A journal that was stopped admits nothing until it starts again; one that
+  // never started admits, so a host can mount views before calling start.
+  let running = false, stopped = false, paused = false, unsubscribe;
   // Each read for watchers and each committed write takes a ticket in order.
   // Watchers only see a state whose ticket is newer than the last one shown,
   // so a read that started before a write never shows the older records.
@@ -197,6 +199,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       let key;
       try {
         key = await exclusive(async () => {
+          if (stopped) return undefined;
           const state = await read();
           // Unconsumed outcomes do not hold the owner back; a pending or blocked record does.
           if (state.unreadable !== null || owned(state, journal, owner).some(item => !valid(item) || item.state !== 'terminal')) return undefined;
@@ -244,6 +247,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     },
     start() {
       paused = false;
+      stopped = false;
       if (!running) {
         unsubscribe = store.subscribe(changed);
         running = true;
@@ -254,6 +258,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     stop() {
       if (!running) return;
       running = false;
+      stopped = true;
       globalThis.removeEventListener?.('online', online);
       unsubscribe();
       unsubscribe = undefined;

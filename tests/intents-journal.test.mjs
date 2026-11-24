@@ -134,6 +134,18 @@ test('admits once per owner and stores before sending', async () => {
   assert.equal(transport.requests.length, 1);
 });
 
+test('a stopped journal refuses admission, while one that never started admits', async () => {
+  const {hook, journal, storage} = setup({start: false});
+  assert.equal(await hook.admit(entry()), 'k1');
+  journal.start();
+  journal.stop();
+  assert.equal(await hook.admit(entry({owner: '"t2"'})), undefined);
+  assert.deepEqual(stored(storage).records.map(item => item.key), ['k1']);
+  journal.start();
+  assert.equal(await hook.admit(entry({owner: '"t2"'})), 'k2');
+  journal.stop();
+});
+
 test('another owner or another journal is admitted while one owner is pending', async () => {
   const {hook, storage} = setup();
   assert.equal(await hook.admit(entry()), 'k1');

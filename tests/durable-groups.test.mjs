@@ -50,6 +50,14 @@ component Editor(tasks: {update: DurableOperation<{id: string; title: string}, {
     log("returned:" + String(value));
   }
 
+  action async guarded(title: string) {
+    try {
+      await save({id: taskId, title});
+    } catch (error) {
+      log("refused:" + String(error));
+    }
+  }
+
   action open(id: string) { taskId = id; }
 
   ui {
@@ -62,6 +70,7 @@ component Editor(tasks: {update: DurableOperation<{id: string; title: string}, {
       button "Save B" => submit("B")
       button "Save boom" => submit("boom")
       button "Save move" => submit("move")
+      button "Guarded A" => guarded("A")
       button "Open t2" => open("t2")
       button "Touch" => touch()
     }
@@ -449,6 +458,56 @@ test('the members of a group need operations of one journal', t => {
     /must call an operation created with journal.operation/);
   assert.throws(() => compiled.module.mount(new FakeNode('root'), {...props, tasks: {update: one.update, touch: two.touch}}),
     /must call operations of one journal/);
+});
+
+// A mount whose `tasks` prop the test can point at another journal's
+// operations without remounting, as a host's reactive prop would.
+function swappable(t, operations) {
+  const log = [], root = new FakeNode('root');
+  let tasks = operations;
+  const dispose = compiled.module.mount(root, {get tasks() { return tasks; }, log: line => log.push(line), first: 't1'});
+  t.after(dispose);
+  return {root, log, swap(next) { tasks = next; }, click: label => findButton(root, label).click(), status: () => root.descendants('p')[0].textContent};
+}
+
+function otherAccount(values, locks) {
+  const journal = createIntentJournal({store: memoryIntentStore(values), scope: 'bob', locks});
+  const transport = manualTransport();
+  const operations = {update: journal.operation('tasks.update', {version: 1, transport}), touch: journal.operation('tasks.touch', {version: 1, transport})};
+  journal.start();
+  return {journal, transport, operations};
+}
+
+test('a call after the prop moved to the operations of another journal is refused', async t => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
+  const alice = setup({storage: memoryIntentStore(values)});
+  const bob = otherAccount(values, alice.locks);
+  t.after(() => { alice.journal.stop(); bob.journal.stop(); });
+  const view = swappable(t, {update: alice.update, touch: alice.touch});
+  await settle();
+  view.swap(bob.operations);
+  view.click('Guarded A');
+  await settle();
+  assert.deepEqual(view.log, ["refused:TypeError: The durable member 'save' must call operations of the journal its group watches"]);
+  assert.deepEqual(records(alice.storage), [], 'the mounted journal stores nothing');
+  assert.deepEqual([...values.keys()], [storageKey], 'the other journal stores nothing either');
+  assert.equal(alice.transport.requests.length + bob.transport.requests.length, 0);
+});
+
+test('an outcome is not resumed after the prop moved to the operations of another journal', async t => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
+  const alice = setup({storage: memoryIntentStore(values)});
+  const bob = otherAccount(values, alice.locks);
+  t.after(() => { alice.journal.stop(); bob.journal.stop(); });
+  const view = swappable(t, {update: alice.update, touch: alice.touch});
+  view.click('Save A');
+  await settle();
+  assert.equal(records(alice.storage)[0].state, 'pending');
+  view.swap(bob.operations);
+  alice.transport.answer(applied(4));
+  await settle();
+  assert.deepEqual(view.log, ['returned:undefined'], 'the body does not run for the other journal');
+  assert.equal(records(alice.storage)[0].state, 'terminal', 'the outcome stays for a consumer of its journal');
 });
 
 function emittedFiles(build) {

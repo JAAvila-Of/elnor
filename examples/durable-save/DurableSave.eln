@@ -36,7 +36,7 @@ component DurableSave(notes: Notes) {
     section {
       form => save({text: draft, revision}) {
         input "Text" <-> draft
-        submit disabled=(saving.pending || conflict !== null) "Save"
+        submit disabled=(saving.pending || save.status === "blocked" || conflict !== null) "Save"
       }
       small ({idle: "Ready", pending: "Saving", success: "Saved", rejected: "Rejected", unconfirmed: "Unknown result", blocked: "Blocked"}[save.status])
       strong message

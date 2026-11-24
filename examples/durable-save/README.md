@@ -20,12 +20,23 @@ action async save(edit: Note) in saving {
   const outcome = await notes.save(edit);
   if (outcome.status === "applied") {
     revision = outcome.result.revision;
-    ...
+    message = "";
+  } else if (outcome.status === "unavailable") {
+    message = "The save was received, but its result is no longer available.";
+  } else if (outcome.reason.kind === "conflict") {
+    conflict = outcome.reason.current;
+    draft = edit.text;
+    message = "Someone else changed this note. Review it before saving again.";
+  } else {
+    message = outcome.reason.message;
+  }
+}
 ```
 
 Calling `save` stores the intent in the journal before anything is sent. The
 rest of the body runs when the provider decides the outcome, in this page or
-in a later one after a reload. The label reads `save.status`. On a conflict the
+in a later one after a reload. The label reads `save.status`. Save is disabled
+while the intent is pending or blocked and during a review. On a conflict the
 body keeps the person's text in the draft and shows the provider's current
 text. "Keep my text" and "Use their text" take the current revision, and the
 next Save is a new intent with a new key.
@@ -68,6 +79,8 @@ provider:
 
 - a reply lost after the commit, then an unmount and a new journal on the same
   storage: the new view shows `Saved` and the provider applied one effect;
+- a blocked record in storage: the view shows `Blocked`, Save stays disabled
+  and nothing is sent;
 - a conflict with a write made through another key: the view shows the other
   text, and saving after "Keep my text" or "Use their text" applies with a new
   key;
@@ -89,7 +102,7 @@ has not run yet.
 | | RecoverableSave | DurableSave |
 | --- | --- | --- |
 | Nonblank lines of view and client or host | 60 + 136 = 196 | 45 + 21 = 66 |
-| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 33534, 10349 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 33563, 10357 |
 
 The byte counts were measured on this branch with the same method for both:
 the compiled view module and entry, plus the client or host transpiled by
@@ -111,10 +124,12 @@ provider refuses the session's account.
   yet, and the language service has no hover or inlay hint for it.
 - The journal stores inputs and parameters in plain text in origin storage,
   readable by any script of the origin. Do not pass secrets as durable inputs.
+- The group's `pending` is false for a blocked intent, and a call is refused
+  while the owner's intent is pending or blocked. This view therefore disables
+  Save with `saving.pending || save.status === "blocked"`.
 - `save.status` is `idle` while another member of the same group and owner has
-  the pending or blocked intent, and calling `save` is refused. Disable the
-  button with the group's `pending`, as this view does, or with the other
-  member's status.
+  the pending or blocked intent, and calling `save` is refused. In a group
+  with several members, check the other members' status too.
 - The durable checks read declared types. `any` passes the owner and JSON
   checks and `{}` passes the JSON checks, so the compiler cannot check what
   those types hold.

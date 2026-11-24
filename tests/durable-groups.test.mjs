@@ -56,6 +56,7 @@ component Editor(tasks: {update: DurableOperation<{id: string; title: string}, {
       p (save.status)
       p message
       p (String(revision))
+      p (String(editing.pending))
       button "Save A" => submit("A")
       button "Save B" => submit("B")
       button "Save boom" => submit("boom")
@@ -170,7 +171,8 @@ function mount(t, {update, touch}, {first = 't1', log = []} = {}) {
     click: label => findButton(root, label).click(),
     status: () => root.descendants('p')[0].textContent,
     message: () => root.descendants('p')[1].textContent,
-    revision: () => root.descendants('p')[2].textContent
+    revision: () => root.descendants('p')[2].textContent,
+    groupPending: () => root.descendants('p')[3].textContent
   };
   t.after(() => view.dispose());
   return view;
@@ -377,8 +379,10 @@ test('calls are refused while pending or blocked', async t => {
   const journal = setup();
   t.after(() => journal.journal.stop());
   const view = mount(t, journal);
+  assert.equal(view.groupPending(), 'false');
   view.click('Save A');
   await settle();
+  assert.equal(view.groupPending(), 'true');
   view.click('Save B');
   await settle();
   assert.deepEqual(view.log, ['returned:undefined']);
@@ -394,6 +398,7 @@ test('calls are refused while pending or blocked', async t => {
   const other = mount(t, blocked);
   await settle();
   assert.equal(other.status(), 'blocked');
+  assert.equal(other.groupPending(), 'false', 'the group is not pending for a blocked intent');
   other.click('Save A');
   await settle();
   assert.deepEqual(other.log, ['returned:undefined']);

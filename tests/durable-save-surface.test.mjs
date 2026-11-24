@@ -199,6 +199,26 @@ test('shows a conflict and saves again with a new key', async t => {
   assert.equal((await provider.stats()).effects, 4);
 });
 
+test('a blocked record shows Blocked and keeps Save disabled', async t => {
+  const record = {
+    format: 1, journal: 'notes', scope: 'alice', owner: '"note"', member: 'save', operation: 'notes.save', version: 1,
+    key: 'old', epoch: 'E1', params: [{text: 'old text', revision: 0}], input: {text: 'old text', revision: 0},
+    state: 'blocked', reason: 'epoch', admittedBy: 'earlier-page'
+  };
+  const storage = memoryStorage();
+  storage.setItem('elnor-intents:alice', JSON.stringify({format: 1, epoch: 'E1', records: [record]}));
+  const recorded = recordingFetch();
+  // Nothing is sent for a blocked record, so no provider is needed.
+  const view = page(t, {url: 'http://127.0.0.1:9'}, storage, recorded);
+  await until(() => view.label() === 'Blocked', 'the view did not show the blocked record: ' + view.label());
+  assert.equal(findButton(view.root, 'Save').disabled, true, "the group's pending is false, so the status keeps Save disabled");
+  await view.fill('new text');
+  view.submit();
+  await sleep(20);
+  assert.equal(recorded.requests.length, 0);
+  assert.equal(JSON.parse(storage.getItem('elnor-intents:alice')).records.length, 1);
+});
+
 test('the example meets the DX criterion', () => {
   const nonblank = file => fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(line => line.trim()).length;
   const lines = nonblank(view) + nonblank(host);

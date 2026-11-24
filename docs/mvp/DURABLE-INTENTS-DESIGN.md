@@ -116,18 +116,29 @@ groups. `durable` cannot be combined with `latest`, `keep-latest`, `queue`,
 
 ### The member
 
+The examples use these types, and the component receives `task` and `tasks`
+as props:
+
+```ts
+export type TaskEdit = {id: string; title: string; revision: number};
+export type TaskRevision = {revision: number};
+export type TaskRejection = {kind: "conflict"; current: TaskEdit} | {kind: "invalid"; message: string};
+```
+
 ```elnor
 action async save(edit: TaskEdit) in editing {
   const outcome = await tasks.update(edit);
   if (outcome.status === "applied") {
     if (!outcome.late) revision = outcome.result.revision;
     message = "Saved";
-  } else if (outcome.status === "rejected" && outcome.reason.kind === "conflict") {
-    current = outcome.reason.current;
-    draft = edit;
-    message = "Someone else changed this task. Review it before saving again.";
   } else if (outcome.status === "rejected") {
-    message = outcome.reason.message;
+    if (outcome.reason.kind === "conflict") {
+      current = outcome.reason.current;
+      draft = edit;
+      message = "Someone else changed this task. Review it before saving again.";
+    } else {
+      message = outcome.reason.message;
+    }
   } else {
     message = "The save was received, but its result is no longer available.";
   }
@@ -252,11 +263,10 @@ const journal = createIntentJournal({
   storage: localStorage,
   scope: account.id,
 });
+const transport = httpIntentTransport({baseUrl: "/api/intents"});
 const tasks = {
-  update: journal.operation<TaskEdit, TaskRevision, TaskRejection>("tasks.update", {
-    version: 1,
-    transport: httpIntentTransport({baseUrl: "/api/intents"}),
-  }),
+  update: journal.operation<TaskEdit, TaskRevision, TaskRejection>("tasks.update", {version: 1, transport}),
+  remove: journal.operation<{id: string; revision: number}, null, TaskRejection>("tasks.remove", {version: 1, transport}),
 };
 journal.start();
 ```

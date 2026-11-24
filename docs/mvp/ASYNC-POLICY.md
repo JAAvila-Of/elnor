@@ -386,15 +386,18 @@ and the protocol. [DurableSave](../../examples/durable-save/README.md) is the
 example, and it rewrites the handwritten
 [RecoverableSave](../../examples/recoverable-save/RecoverableSave.eln).
 
-```elnor
-action group editing(note.id) durable "note-edit"
+The examples use the `TaskEdit`, `TaskRevision` and `TaskRejection` types of
+the [design](DURABLE-INTENTS-DESIGN.md#the-member).
 
-action async save(edit: NoteEdit) in editing {
-  const outcome = await notes.save(edit);
+```elnor
+action group editing(task.id) durable "task-edit"
+
+action async save(edit: TaskEdit) in editing {
+  const outcome = await tasks.update(edit);
   if (outcome.status === "applied") {
     revision = outcome.result.revision;
   } else if (outcome.status === "rejected") {
-    message = outcome.reason.kind === "conflict" ? "Review the other change" : "Not saved";
+    message = outcome.reason.kind === "conflict" ? "Review the other change" : outcome.reason.message;
   }
 }
 ```
@@ -461,18 +464,22 @@ compiled components on a fake DOM.
 | `blocked` | The record cannot be sent safely; the host must review it |
 
 There is no `error` status: a transport failure leaves the intent pending. The
-group exposes `pending`. A call while the owner has a pending or blocked
-intent is refused. The members of a group share the owner, and a member's
-`status` is `idle` while another member of the same group and owner has the
-pending or blocked intent, although calling it is refused. Disable its button
-with the group's `pending` or with the other member's status.
+group exposes `pending`, which is true only while the owner's intent is
+pending; it is false for a blocked intent. A call while the owner has a
+pending or blocked intent is refused, so a button that starts a member checks
+both the group's `pending` and the member's status for `blocked`, as in
+`disabled=(saving.pending || save.status === "blocked")`. The members of a
+group share the owner, and a member's `status` is `idle` while another member
+of the same group and owner has the pending or blocked intent, although
+calling it is refused. In a group with several members, check the other
+members' status for `blocked` too.
 
 ### The host
 
 ```ts
 const journal = createIntentJournal({storage: localStorage, scope: account.id});
 const transport = httpIntentTransport({baseUrl: "/api/intents", headers: () => session.headers()});
-const notes = {save: journal.operation<NoteEdit, NoteSaved, NoteRejection>("notes.save", {version: 1, transport})};
+const tasks = {update: journal.operation<TaskEdit, TaskRevision, TaskRejection>("tasks.update", {version: 1, transport})};
 journal.start();
 ```
 
@@ -515,7 +522,7 @@ component with an action group.
 DurableSave and its host take 66 nonblank lines, against 196 for the
 handwritten view and client, below the limit of 98 that the design set. Its
 delivery, with `intents.mjs` (19923 bytes) and `durable-runtime.mjs` (7394
-bytes) counted, is 33534 JS bytes and 10349 gzip-9 bytes, summed over the
+bytes) counted, is 33563 JS bytes and 10357 gzip-9 bytes, summed over the
 files. The handwritten version measured the same way on the same branch is
 15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
 reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude

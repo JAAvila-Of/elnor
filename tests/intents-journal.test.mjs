@@ -496,6 +496,25 @@ test("another store's committed write notifies a started journal", async () => {
   assert.deepEqual(views, [null, 'terminal'], 'a stopped journal does not follow other tabs');
 });
 
+test('a started journal sends a pending intent that another tab admitted and left', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]), locks = serialLocks();
+  const retry = {firstMs: 1000, maxMs: 1000};
+  const closing = setup({storage: memoryIntentStore(values), locks, retry});
+  const other = setup({storage: memoryIntentStore(values), locks, retry, answers: [applied('E1')]});
+  await settle();
+  assert.equal(await closing.hook.admit(entry()), 'k1');
+  await until(() => closing.transport.requests.length === 1, 'the request of the admitting tab');
+  // The admitting tab closes with its request in flight.
+  closing.journal.stop();
+  await settle();
+  assert.equal(other.transport.requests.length, 0, 'the other tab waits one backoff before it adopts the intent');
+  t.mock.timers.tick(1000);
+  await until(() => stored(closing.storage).records[0].state === 'terminal', 'the outcome sent by the other tab');
+  assert.deepEqual(other.transport.requests.map(request => request.key), ['k1']);
+  other.journal.stop();
+});
+
 test('operation version and unknown operation block', async () => {
   const storage = seeded([record({key: 'a'}), record({key: 'b', owner: '"t2"', operation: 'tasks.archive'})]);
   const {transport, journal} = setup({storage, version: 2, start: false});

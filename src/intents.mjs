@@ -31,7 +31,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   store ??= indexedDbIntentStore();
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
-  const inFlight = new Map(), waiting = new Map(), attempts = new Map();
+  const inFlight = new Map(), waiting = new Map(), attempts = new Map(), adopted = new Set();
   // A journal that was stopped admits nothing until it starts again; one that
   // never started admits, so a host can mount views before calling start.
   let running = false, stopped = false, paused = false, unsubscribe;
@@ -87,7 +87,21 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     let state;
     try { state = await read(); } catch { return; }
     notify(state, ticket);
+    adopt(state);
   };
+  // A pending record that this journal can send and is not sending may have
+  // been left by a tab that closed with its request in flight. It is sent
+  // after one backoff, so the admitting tab usually decides it first; a
+  // concurrent replay is safe by protocol.
+  const adopt = state => {
+    if (!running || paused || state.unreadable !== null) return;
+    for (const item of state.records) {
+      if (!valid(item) || item.state !== 'pending' || !sendable(item) || inFlight.has(item.key) || waiting.has(item.key)) continue;
+      adopted.add(item.key);
+      schedule(item.key);
+    }
+  };
+  const sendable = item => operations.get(item.operation)?.version === item.version;
 
   const pause = () => {
     if (paused) return;
@@ -103,6 +117,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     const delay = Math.min(retry.firstMs * 2 ** (attempt - 1), retry.maxMs);
     waiting.set(key, setTimeout(() => {
       waiting.delete(key);
+      adopted.delete(key);
       drive(key);
     }, delay));
   };
@@ -111,6 +126,13 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   // a retry waits, or the journal stops. An answer that arrives after stop is
   // still recorded, but nothing more is sent.
   async function drive(key) {
+    // A reconcile or an admission sends at once instead of waiting for an
+    // adoption scheduled by a refresh.
+    if (adopted.delete(key)) {
+      clearTimeout(waiting.get(key));
+      waiting.delete(key);
+      attempts.delete(key);
+    }
     if (!running || paused || inFlight.has(key) || waiting.has(key)) return;
     const controller = new AbortController();
     inFlight.set(key, controller);
@@ -176,6 +198,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     for (const timer of waiting.values()) clearTimeout(timer);
     waiting.clear();
     attempts.clear();
+    adopted.clear();
     reconcile();
   };
   // Another tab committed a write or a removal.
@@ -267,6 +290,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       inFlight.clear();
       waiting.clear();
       attempts.clear();
+      adopted.clear();
     },
     async outcomes() {
       const state = await readOrEmpty();

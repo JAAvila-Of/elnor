@@ -56,7 +56,8 @@ const blocked = await journal.blocked();
 `createNotes` starts the journal, which keeps its records in IndexedDB so that
 every tab of the browser profile sees one journal; the tests pass an in-memory
 `store` instead. Call `journal.stop()` before the session ends or changes, and
-create another journal for the next account. The `X-Fixture-Account` header
+create another journal for the next account. `await journal.forget()` removes
+the account's records in every tab, including writes that were never sent. The `X-Fixture-Account` header
 stands in for the session in this fixture. `journal.outcomes()` and
 `journal.blocked()` resolve to what no view consumed and what cannot be sent;
 the host decides what to show for them.

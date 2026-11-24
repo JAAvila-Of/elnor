@@ -490,6 +490,9 @@ journal.start();
   The `store` option takes another `IntentStore`, as the Node.js tests do.
 - `scope` partitions the storage by account. Call `journal.stop()` before the
   session ends or changes, and create another journal for the next account.
+  `await journal.forget()` removes every record of the scope in every tab,
+  including writes that were never sent, for a host that must not leave them
+  on the device after a logout.
   When the provider answers that the scope does not belong to the session, the
   intent stays pending, the journal stops sending and `onPaused` reports it.
 - `await journal.outcomes()` gives the outcomes that no member consumed, each

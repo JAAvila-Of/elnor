@@ -292,7 +292,9 @@ The compiler recognizes durable operations by their type from that module.
 - `scope` partitions the storage by account. The journal only reads and sends
   intents of its scope. The host calls `journal.stop()` before the session
   ends or changes; it aborts requests in flight and sends nothing more. A
-  login as another account creates another journal.
+  login as another account creates another journal. A host that must not
+  leave the scope's records on the device calls `await journal.forget()`,
+  which removes them all, including writes that were never sent.
 - If the provider answers that the scope does not belong to the session, the
   record stays pending and the journal pauses that scope and reports it to the
   host. A valid intent is not blocked because the session changed under it.
@@ -415,7 +417,8 @@ any component with an action group.
   says so, and the compiler cannot know.
 - Intents are partitioned by scope and are only sent by a journal of that
   scope. Discarding a scope on logout loses its unsent writes, so the host
-  decides it explicitly.
+  decides it explicitly with `await journal.forget()`, which removes every
+  record of the scope under its lock and tells the other tabs.
 - Storage failure at admission refuses the call and sends nothing.
 - Corrupt or foreign records block; they are never deleted or replaced
   silently.

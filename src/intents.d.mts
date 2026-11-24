@@ -127,6 +127,13 @@ export interface IntentJournal {
   outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
   /** Resolves to the records that cannot be sent: `await journal.blocked()`. */
   blocked(): Promise<ReadonlyArray<BlockedRecord>>;
+  /**
+   * Removes every record of the scope, pending, terminal and blocked, under the scope's lock, and
+   * tells the other tabs. Use it when the scope's data must not stay on the device, for example on
+   * logout. Pending intents that were not sent are lost, and one in flight may be applied without
+   * its outcome reaching anyone.
+   */
+  forget(): Promise<void>;
   /** Called when the provider refuses the scope for the current session; the journal sends nothing until `start`. */
   onPaused(listener: (reason: 'scope-refused') => void): () => void;
 }

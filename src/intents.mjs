@@ -324,6 +324,16 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
         };
       });
     },
+    // Removes every record of the scope, pending, terminal, blocked or
+    // unreadable, for example when the person logs out. Pending intents that
+    // were not sent are lost, and a request in flight may still be applied
+    // without its outcome reaching anyone.
+    forget() {
+      return exclusive(async () => {
+        await store.remove(name);
+        notify(parseJournal(null));
+      });
+    },
     onPaused(listener) {
       pauseListeners.add(listener);
       return () => { pauseListeners.delete(listener); };

@@ -547,6 +547,32 @@ test('an older operation version blocks, while a newer version or an unknown ope
   newer.stop();
 });
 
+test('forget removes every record of the scope and other tabs see it', async () => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: [
+    record({key: 'p'}), record({key: 't', owner: '"t2"', state: 'terminal', outcome: {status: 'applied', result: 1}}),
+    record({key: 'b', owner: '"t3"', state: 'blocked', reason: 'mismatch'})
+  ]})], ['elnor-intents:bob', 'kept']]);
+  const locks = serialLocks();
+  const leaving = setup({storage: memoryIntentStore(values), locks, start: false});
+  const other = setup({storage: memoryIntentStore(values), locks, start: false});
+  const views = [];
+  other.hook.watch('task-edit', '"t1"', view => views.push(view?.state ?? null));
+  other.journal.start();
+  await settle();
+  assert.deepEqual(views, ['pending']);
+  locks.names.length = 0;
+  await leaving.journal.forget();
+  assert.deepEqual(locks.names, [storageKey], 'the removal runs under the scope lock');
+  assert.equal(values.has(storageKey), false);
+  assert.equal(values.get('elnor-intents:bob'), 'kept', 'other scopes are kept');
+  await settle();
+  assert.deepEqual(views, ['pending', null], 'a started journal in another tab sees the removal');
+  assert.deepEqual(await other.journal.outcomes(), []);
+  assert.deepEqual(await other.journal.blocked(), []);
+  assert.equal(await other.hook.admit(entry()), 'k1');
+  other.journal.stop();
+});
+
 test('admission refuses an operation version the journal does not know', async () => {
   const {hook, storage} = setup({start: false});
   assert.equal(await hook.admit(entry({version: 2})), undefined);

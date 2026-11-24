@@ -73,6 +73,49 @@ test('native editor and project checker infer result and validate the original c
   assert.ok(checkSurfaceProject(file,{outputDir}).diagnostics.some(item=>item.code==='TS2339'&&/missingField/.test(item.message)));
 });
 
+const calcSource = source.replace('  ui {', `  calc label = refresh.pending ? "Refreshing" : refresh.status === "success" ? "Orders: " + refresh.result.openOrders : "Ready";
+  calc busy = dashboard.pending;
+
+  ui {`).replace('disabled=(dashboard.pending)', 'disabled=(busy)').replace('      p (refresh.status', '      small label\n      p (refresh.status');
+
+test('a calc reads the status of a group member in the editor and the checker', t => {
+  const {service,file,directory}=scope(t);
+  service.open(file,calcSource);
+  assert.deepEqual(service.diagnostics(file),[]);
+  fs.writeFileSync(file,calcSource);
+  assert.deepEqual(checkSurfaceProject(file,{outputDir:path.join(directory,'check')}).diagnostics,[]);
+  const bad=calcSource.replace('refresh.pending ?','refresh.status === "done" ?');
+  service.open(file,bad);
+  const line=bad.slice(0,bad.indexOf('calc label')).split('\n').length;
+  const [error,...rest]=service.diagnostics(file);
+  assert.deepEqual(rest,[]);
+  assert.deepEqual([error.code,bad.slice(error.start,error.start+error.length),error.line],['TS2367','refresh.status === "done"',line]);
+  fs.writeFileSync(file,bad);
+  assert.deepEqual(checkSurfaceProject(file,{outputDir:path.join(directory,'check')}).diagnostics.map(item=>[item.code,item.line]),[['TS2367',line]]);
+});
+
+test('a calc that reads a member status updates when the status changes',async t=>{
+  const {file,directory}=scope(t);
+  fs.writeFileSync(file,calcSource);
+  const outputDir=path.join(directory,'build');
+  const build=buildSurfaceProject(file,{outputDir,checkOutputDir:path.join(directory,'check')});
+  const module=await import(pathToFileURL(path.join(outputDir,build.entryOutput)));
+  setupDOM();
+  const root=new FakeNode('root'),requests=[];
+  const unmount=module.mount(root,{workspace:'A',load(){const gate=Promise.withResolvers();requests.push(gate);return gate.promise;}});
+  t.after(unmount);
+  const label=()=>root.descendants('small').map(node=>node.textContent);
+  assert.deepEqual(label(),['Ready']);
+  findButton(root,'Refresh').click();
+  await flush();
+  assert.deepEqual(label(),['Refreshing']);
+  assert.equal(findButton(root,'Refresh').disabled,true);
+  requests[0].resolve({openOrders:3});
+  await flush();
+  assert.deepEqual(label(),['Orders: 3']);
+  assert.equal(findButton(root,'Refresh').disabled,false);
+});
+
 test('native completion and definitions work on action groups while the author is typing', t => {
   const {service,file}=scope(t);
   const partial=source.replace('single-flight','lat').replace('in dashboard','in dash')

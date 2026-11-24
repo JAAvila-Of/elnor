@@ -36,13 +36,27 @@ export function virtualCheckSource(ir){
   if(ir.header)add(importsFor(ir),1);
   if(durableNames)add(durableHelpers(durableNames),1);
   add(`function __validateComponent(${ir.params.map(p=>p.raw).join(', ')}) {`,1);
+  // At runtime groups and their members exist before states and calcs, which
+  // may read them. The owners read bindings and are checked after the calcs.
+  for(const group of ir.actionGroups)add(`const ${group.name} = {} as ${actionGroupType};`,group.line);
+  const managed=managedActionNames(ir);
+  const actionPieces=ir.actions.map(authored=>memberBodyPieces(authored,ir.source,durableNames));
+  for(const [index,authored] of ir.actions.entries()){
+    const implementation=managed.get(authored.name);
+    if(!implementation)continue;
+    const member=actionPieces[index].some(piece=>piece.durableCall);
+    const head=`const ${authored.name} = {} as `;
+    const type=member?durableActionType(implementation,durableMemberTypes(durableNames,authored)):managedActionType(implementation);
+    if(member)generatedTypeRanges.push({start:generatedOffset+head.length,end:generatedOffset+head.length+type.length});
+    add(head+type+';',authored.line);
+  }
   for(const state of ir.states)add(`let ${state.name}${state.type} = (${state.expr});`,state.line,1);
   let reactiveState='';
   projectReactiveState(ir.states,text=>{reactiveState+=text;},state=>{reactiveState+=state.name;});
   if(reactiveState)add(reactiveState.trimEnd(),1);
   for(const calc of ir.calcs)add(`const ${calc.name} = (${calc.expr});`,calc.line,1);
   for(const group of ir.actionGroups){
-    let text=`const ${group.name} = {} as ${actionGroupType}; void [`;
+    let text='void [';
     group.owners.forEach((owner,index)=>{
       if(index)text+=', ';
       if(group.policy==='durable'){
@@ -57,16 +71,11 @@ export function virtualCheckSource(ir){
   if(ir.events.length){
     add(`const emit: {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>`${p.name}: ${p.type}`).join(', ')}) => void`).join(';')}} = {${ir.events.map(e=>`${e.name}: (${e.params.map(p=>p.name).join(', ')}) => {}`).join(',')}};`,ir.events[0].line);
   } else add('const emit = {};',1);
-  const managed=managedActionNames(ir);
-  for(const authored of ir.actions){
+  for(const [index,authored] of ir.actions.entries()){
     const implementation=managed.get(authored.name);
-    const pieces=memberBodyPieces(authored,ir.source,durableNames),member=pieces.some(piece=>piece.durableCall);
+    const pieces=actionPieces[index],member=pieces.some(piece=>piece.durableCall);
     let action=authored;
     if(implementation){
-      const head=`const ${authored.name} = {} as `;
-      const type=member?durableActionType(implementation,durableMemberTypes(durableNames,authored)):managedActionType(implementation);
-      if(member)generatedTypeRanges.push({start:generatedOffset+head.length,end:generatedOffset+head.length+type.length});
-      add(head+type+';',authored.line);
       action={...authored,name:implementation};
       action.functionSource=actionFunctionPrefix(action)+authored.functionSource.slice(actionFunctionPrefix(authored).length);
     }

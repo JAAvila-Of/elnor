@@ -5,6 +5,7 @@ component DurableSave(notes: Notes) {
   state revision = 0;
   state conflict: Note | null = null;
   state message = "";
+  calc label = {idle: "Ready", pending: "Saving", success: "Saved", rejected: "Rejected", unconfirmed: "Unknown result", blocked: "Blocked"}[save.status];
 
   action group saving("note") durable "notes"
 
@@ -38,12 +39,12 @@ component DurableSave(notes: Notes) {
         input "Text" <-> draft
         submit disabled=(saving.pending || save.status === "blocked" || conflict !== null) "Save"
       }
-      small ({idle: "Ready", pending: "Saving", success: "Saved", rejected: "Rejected", unconfirmed: "Unknown result", blocked: "Blocked"}[save.status])
+      small label
       strong message
       if conflict !== null {
-        p ("Their text: " + (conflict?.text ?? ""))
+        p ("Their text: " + conflict.text)
         button "Keep my text" => review(draft)
-        button "Use their text" => review(conflict?.text ?? "")
+        button "Use their text" => review(conflict.text)
       }
     }
   }

@@ -120,6 +120,35 @@ export function projectSurface(source, filename) {
   g('function __validate(');
   ir.params.forEach((p, index) => { if (index) g(', '); bindingOffsets.push(map.source.length); c(p.rawSpan); });
   g(') {\n');
+  // At runtime groups and their members exist before states and calcs, which
+  // may read them. Members are typed only, so they read no binding here; the
+  // owners read bindings and are checked after the calcs.
+  const groups = new Set(), projectedGroups = [];
+  const owners = new Set([...ir.params, ...ir.states, ...ir.calcs].map(binding => binding.name));
+  if (ir.actionGroups.length) {
+    const available = new Set([...owners, ...ir.actions.map(action => action.name)]);
+    for (const group of ir.actionGroups) {
+      if (available.has(group.name)) continue;
+      available.add(group.name);
+      groups.add(group.name);
+      projectedGroups.push(group);
+      g('const '); c(group.nameSpan); g(` = {} as ${actionGroupType};\n`);
+    }
+  }
+  const managed = managedActionNames(ir);
+  const actionPieces = ir.actions.map(action => memberBodyPieces(action, source, durableNames));
+  for (const [index, action] of ir.actions.entries()) {
+    const offsets = {name: -1, body: -1};
+    actionOffsets.push(offsets);
+    const implementation = managed.get(action.name);
+    if (!implementation) continue;
+    const member = actionPieces[index].some(piece => piece.durableCall);
+    g('const '); offsets.name = map.source.length; c(action.nameSpan); g(' = {} as ');
+    const typeStart = map.source.length;
+    g(member ? durableActionType(implementation, durableMemberTypes(durableNames, action)) : managedActionType(implementation));
+    if (member) generatedTypeRanges.push({start: typeStart, end: map.source.length});
+    g(';\n');
+  }
   for (const state of ir.states) {
     g('let '); bindingOffsets.push(map.source.length); c(state.nameSpan); c(state.typeSpan); g(' = ('); c(state.exprSpan); g(');\n');
   }
@@ -127,15 +156,8 @@ export function projectSurface(source, filename) {
   for (const calc of ir.calcs) {
     g('const '); bindingOffsets.push(map.source.length); c(calc.nameSpan); g(' = ('); c(calc.exprSpan); g(');\n');
   }
-  const groups = new Set();
   if (ir.actionGroups.length) {
-    const owners = new Set([...ir.params, ...ir.states, ...ir.calcs].map(binding => binding.name));
-    const available = new Set([...owners, ...ir.actions.map(action => action.name)]);
-    for (const group of ir.actionGroups) {
-      if (available.has(group.name)) continue;
-      available.add(group.name);
-      groups.add(group.name);
-      g('const '); c(group.nameSpan); g(` = {} as ${actionGroupType};\n`);
+    for (const group of projectedGroups) {
       // Unknown bare owners already have a Surface diagnostic. An owner list
       // that does not parse yet is still projected for completions.
       if (group.owners) {
@@ -160,20 +182,11 @@ export function projectSurface(source, filename) {
     g(') => void;');
   }
   g('};\n');
-  const managed = managedActionNames(ir);
-  for (const action of ir.actions) {
+  for (const [index, action] of ir.actions.entries()) {
     const implementation = managed.get(action.name);
-    const offsets = {name: -1, body: -1};
-    actionOffsets.push(offsets);
-    const pieces = memberBodyPieces(action, source, durableNames);
+    const offsets = actionOffsets[index];
+    const pieces = actionPieces[index];
     const member = pieces.some(piece => piece.durableCall);
-    if (implementation) {
-      g('const '); offsets.name = map.source.length; c(action.nameSpan); g(' = {} as ');
-      const typeStart = map.source.length;
-      g(member ? durableActionType(implementation, durableMemberTypes(durableNames, action)) : managedActionType(implementation));
-      if (member) generatedTypeRanges.push({start: typeStart, end: map.source.length});
-      g(';\n');
-    }
     // A member sees its own group with the signal of its invocation.
     const shadowed = implementation && groups.has(action.group);
     if (shadowed) g(`const ${implementation} = (() => { const ${action.group} = {} as ${memberGroupType}; return `);

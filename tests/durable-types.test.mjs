@@ -32,11 +32,12 @@ const save = `  action async save(edit: {id: string; text: string}) in editing {
     }
   }`;
 
-function component({owner = 'note.id', members = save, actions = '', ui = ''} = {}) {
+function component({owner = 'note.id', calcs = '', members = save, actions = '', ui = ''} = {}) {
   return `import type {DurableOperation} from "./intents.d.mts";
 component Editor(${props}) {
   state revision = 0;
   state message = "";
+${calcs}
   action group editing(${owner}) durable "note-edit"
 ${members}
 ${actions}
@@ -100,6 +101,26 @@ test('the member exposes the durable statuses with the operation result and reas
   assert.deepEqual(diagnostics.map(item => [item.code, item.text]), [['TS2322', 'status'], ['TS2339', 'error']]);
   const statuses = /^Type '([^']+)' is not assignable/.exec(diagnostics[0].message)[1].split(' | ').map(status => JSON.parse(status));
   assert.deepEqual(statuses.sort(), ['blocked', 'idle', 'pending', 'rejected', 'success', 'unconfirmed']);
+});
+
+test('a calc reads the status of a durable member in the editor and the checker', t => {
+  const calcs = `  calc label = save.pending ? "Saving" : save.status === "rejected" ? save.reason.current : save.status;
+  calc busy = editing.pending || save.status === "blocked";`;
+  const ui = '      p (busy ? label : "")';
+  const {directory, file, text, diagnostics} = diagnose(t, {calcs, ui});
+  assert.deepEqual(diagnostics, []);
+  fs.writeFileSync(file, text);
+  assert.deepEqual(checkSurfaceProject(file, {outputDir: path.join(directory, 'check')}).diagnostics, []);
+});
+
+test('a calc that misuses a durable member status reports an error on the calc line', t => {
+  const calcs = '  calc done = save.status === "done";';
+  const {directory, file, text, diagnostics} = diagnose(t, {calcs, ui: '      p (done ? "Done" : "")'});
+  assert.deepEqual(diagnostics.map(item => [item.code, item.text, item.line]),
+    [['TS2367', 'save.status === "done"', lineOf(text, 'calc done')]]);
+  fs.writeFileSync(file, text);
+  const checked = checkSurfaceProject(file, {outputDir: path.join(directory, 'check')}).diagnostics;
+  assert.deepEqual(checked.map(item => [item.code, item.line]), [['TS2367', lineOf(text, 'calc done')]]);
 });
 
 test('an owner must be a string, a number or a list of them', t => {

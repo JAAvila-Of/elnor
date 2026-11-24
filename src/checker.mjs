@@ -9,7 +9,7 @@ import {sourceKey,sourceHash,surfaceRecords,sourcePath,sourceImport,logicalKey} 
 import {observeFileHost} from './observed-host.mjs';
 import {actionFunctionPrefix, guardCallChecks, guardCallConflicts, guardedBodyOffset} from './action-guards.mjs';
 import {projectReactiveState} from './language-projection.mjs';
-import {actionGroupType, durableActionType, managedActionNames, managedActionType, memberGroupType} from './action-groups.mjs';
+import {actionGroupType, durableActionType, managedActionMessage, managedActionNames, managedActionType, memberGroupType} from './action-groups.mjs';
 import {durableHelperNames, durableHelpers, durableMemberTypes, durableTypeErrors, memberBodyPieces} from './durable-checks.mjs';
 const ts=getTs();
 const normalize=s=>s.replaceAll('\\','/');
@@ -135,7 +135,7 @@ export function virtualCheckSource(ir){
   add('}',1);
   add('}',1);
   add(contract(ir),1);
-  return {source:lines.join('\n')+'\n',lineMap:map,actionMappings,guardChecks,durable,generatedTypeRanges};
+  return {source:lines.join('\n')+'\n',lineMap:map,actionMappings,guardChecks,durable,generatedTypeRanges,managed};
 }
 function actionDiagnosticLine(entry,offset){
   if(!entry||typeof offset!=='number')return undefined;
@@ -166,7 +166,7 @@ export function typecheckGraph(graph,outputDir,extraFiles=[],{onDependency,onPro
   for(const ir of records){
     const v=virtualCheckSource(ir);
     const dest=path.resolve(examples,'components',`${sourceHash(ir.filename)}.eln.mts`);
-    fs.writeFileSync(dest,v.source);files.push(dest);maps.set(normalize(dest),{ir,lineMap:v.lineMap,actionMappings:v.actionMappings,guardChecks:v.guardChecks,durable:v.durable,generatedTypeRanges:v.generatedTypeRanges});
+    fs.writeFileSync(dest,v.source);files.push(dest);maps.set(normalize(dest),{ir,lineMap:v.lineMap,actionMappings:v.actionMappings,guardChecks:v.guardChecks,durable:v.durable,generatedTypeRanges:v.generatedTypeRanges,managed:v.managed});
   }
   const opts=createTypeScriptOptions();
   const host=observeFileHost(ts.createCompilerHost(opts),onDependency);
@@ -210,7 +210,8 @@ export function typecheckGraph(graph,outputDir,extraFiles=[],{onDependency,onPro
     // A durable member type repeats an error of the mapped call.
     if(entry?.generatedTypeRanges.some(range=>d.start>=range.start&&d.start<range.end))continue;
     const position=d.file?.getLineAndCharacterOfPosition(d.start??0);
-    const message = entry ? surfaceDiagnosticMessage(ts, d, () => program.getTypeChecker()) : ts.flattenDiagnosticMessageText(d.messageText, ' ');
+    // A message names a managed action, not its generated implementation.
+    const message = entry ? managedActionMessage(surfaceDiagnosticMessage(ts, d, () => program.getTypeChecker()), entry.managed) : ts.flattenDiagnosticMessageText(d.messageText, ' ');
     errors.push({code:`TS${d.code}`,file:entry?.ir.filename??file??'unknown',line:actionDiagnosticLine(entry,d.start)??entry?.lineMap[position?.line??0]??((position?.line??0)+1),message});
   }
   onProgram?.({program,reads,resolutions,entryFiles:virtuals});

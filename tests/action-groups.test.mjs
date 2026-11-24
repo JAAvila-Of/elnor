@@ -94,6 +94,40 @@ test('a calc reads the status of a group member in the editor and the checker', 
   assert.deepEqual(checkSurfaceProject(file,{outputDir:path.join(directory,'check')}).diagnostics.map(item=>[item.code,item.line]),[['TS2367',line]]);
 });
 
+test('a cycle between a calc and a member is reported on the action under its own name', t => {
+  const cycle = `component Dashboard(start: number) {
+  state count = start;
+  calc next = refresh.result + 1;
+  action group work(count) single-flight
+
+  action async refresh() in work {
+    await Promise.resolve();
+    return next;
+  }
+
+  ui {
+    section {
+      p (String(next))
+    }
+  }
+}
+`;
+  const {service,file,directory}=scope(t);
+  const calcLine=cycle.slice(0,cycle.indexOf('calc next')).split('\n').length;
+  const actionLine=cycle.slice(0,cycle.indexOf('action async refresh')).split('\n').length;
+  const expected=[['TS2502',actionLine],['TS7022',calcLine],['TS7023',actionLine]];
+  service.open(file,cycle);
+  const editor=service.diagnostics(file);
+  assert.deepEqual(editor.map(item=>[item.code,item.line]).sort(),expected);
+  const action=editor.find(item=>item.code==='TS7023');
+  assert.equal(cycle.slice(action.start,action.start+action.length),'refresh');
+  fs.writeFileSync(file,cycle);
+  const checked=checkSurfaceProject(file,{outputDir:path.join(directory,'check')}).diagnostics;
+  assert.deepEqual(checked.map(item=>[item.code,item.line]).sort(),expected);
+  for(const item of [...editor,...checked])assert.doesNotMatch(item.message,/__elnor_managedAction/);
+  for(const messages of [editor,checked])assert.match(messages.find(item=>item.code==='TS7023').message,/^'refresh' implicitly has return type 'any'/);
+});
+
 test('a calc that reads a member status updates when the status changes',async t=>{
   const {file,directory}=scope(t);
   fs.writeFileSync(file,calcSource);

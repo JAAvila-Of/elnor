@@ -20,6 +20,16 @@ export function managedActionNames(ir) {
   return names;
 }
 
+// A TypeScript message that names a managed action's generated
+// implementation names the action instead. `names` maps action names to
+// implementation names, as managedActionNames returns them.
+export function managedActionMessage(message, names) {
+  for (const [action, implementation] of names) {
+    message = message.replace(new RegExp(`(?<![\\w$])${implementation}(?![\\w$])`, 'g'), () => action);
+  }
+  return message;
+}
+
 export function managedActionType(implementation) {
   const result = `Awaited<ReturnType<typeof ${implementation}>>`;
   return `((...args: Parameters<typeof ${implementation}>) => Promise<${result} | undefined>) & (

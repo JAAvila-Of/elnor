@@ -7,7 +7,7 @@ import {sourceKey,sourcePath,sourceImport} from './source-identity.mjs';
 import {createDocumentStore} from './document-store.mjs';
 import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
-import {actionGroupPolicies, ownerIdentityWarnings, staleWriteWarnings} from './action-groups.mjs';
+import {actionGroupPolicies, managedActionMessage, ownerIdentityWarnings, staleWriteWarnings} from './action-groups.mjs';
 import {unownedWorkWarnings} from './unowned-work.mjs';
 import {durableTypeErrors} from './durable-checks.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
@@ -147,10 +147,13 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
       if(doc.projection.generatedTypeRanges?.some(range=>d.start>=range.start&&d.start<range.end))continue;
       const exact = originalLocation(virtualName(doc), {start: d.start ?? 0, length: d.length ?? 0});
       // Never report a virtual offset as a source offset. Unmapped errors are
-      // explicitly anchored to the component, with their provenance retained.
-      const mapped = exact ?? {file: doc.file, ...doc.projection.ir.nameSpan};
-      errors.push({...mapped, code: `TS${d.code}`, message: surfaceDiagnosticMessage(ts, d, () => ls.getProgram()?.getTypeChecker()),
-        ...position(doc.source, mapped.start), approximate: !exact});
+      // explicitly anchored to the managed action whose generated text they
+      // fall in, or else to the component, with their provenance retained.
+      const action = exact ? undefined : doc.projection.managedRanges.find(range => d.start >= range.start && d.start < range.end);
+      const mapped = exact ?? {file: doc.file, ...(action?.nameSpan ?? doc.projection.ir.nameSpan)};
+      // A message names a managed action, not its generated implementation.
+      const message = managedActionMessage(surfaceDiagnosticMessage(ts, d, () => ls.getProgram()?.getTypeChecker()), doc.projection.managed);
+      errors.push({...mapped, code: `TS${d.code}`, message, ...position(doc.source, mapped.start), approximate: !exact});
     }
     return errors;
   }

@@ -103,6 +103,9 @@ export function projectSurface(source, filename) {
   // it repeat an error of the mapped call and are not reported.
   const durable = {members: [], owners: [], skipped: [], toOriginal: (start, length) => map.toOriginal(start, length)};
   const generatedTypeRanges = [];
+  // Generated text of each managed action, its type and its implementation's
+  // header, whose errors, such as a cycle with a calc, belong to the action.
+  const managedRanges = [];
   const durableNames = durableHelperNames(ir);
   let disposalOffset = -1;
   if (ir.header) {
@@ -147,6 +150,7 @@ export function projectSurface(source, filename) {
     const typeStart = map.source.length;
     g(member ? durableActionType(implementation, durableMemberTypes(durableNames, action)) : managedActionType(implementation));
     if (member) generatedTypeRanges.push({start: typeStart, end: map.source.length});
+    managedRanges.push({start: typeStart, end: map.source.length, nameSpan: action.nameSpan});
     g(';\n');
   }
   for (const state of ir.states) {
@@ -189,11 +193,15 @@ export function projectSurface(source, filename) {
     const member = pieces.some(piece => piece.durableCall);
     // A member sees its own group with the signal of its invocation.
     const shadowed = implementation && groups.has(action.group);
+    const headerStart = map.source.length;
     if (shadowed) g(`const ${implementation} = (() => { const ${action.group} = {} as ${memberGroupType}; return `);
     if (action.async && !action.groupSpan) staleWriteChecks.push(map.source.length);
     offsets.body = map.source.length;
     g(action.async ? 'async function ' : 'function ');
-    if (implementation) g(implementation); else { offsets.name = map.source.length; c(action.nameSpan); }
+    if (implementation) {
+      g(implementation);
+      managedRanges.push({start: headerStart, end: map.source.length, nameSpan: action.nameSpan});
+    } else { offsets.name = map.source.length; c(action.nameSpan); }
     g('('); c(action.paramsSpan); g(') {');
     const record = member ? {group: action.group, callee: action.durable.callee, root: action.durable.callee.split('.')[0].trim(),
       functionOffset: offsets.body, callOffset: -1} : null;
@@ -272,5 +280,5 @@ export function projectSurface(source, filename) {
   g('}, __slots?: {');
   for (const slot of ir.slots) g(`${slot}?: () => void;`);
   g('}): void {}\n');
-  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks, actionOffsets, disposalOffset, durable, generatedTypeRanges};
+  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks, actionOffsets, disposalOffset, durable, generatedTypeRanges, managed, managedRanges};
 }

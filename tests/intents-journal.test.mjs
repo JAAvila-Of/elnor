@@ -414,6 +414,29 @@ test('backoff stops growing at maxMs', async t => {
   await until(() => transport.requests.length === 4, 'the fourth request');
 });
 
+test('retry options merge with the defaults and must be positive and finite, with firstMs at most maxMs', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const {transport, hook, journal} = setup({storage: seeded([]), answers: [{kind: 'retry'}, {kind: 'retry'}, applied('E1')], retry: {firstMs: 500}});
+  await hook.admit(entry());
+  await until(() => transport.requests.length === 1, 'the first request');
+  await settle();
+  t.mock.timers.tick(499);
+  await settle();
+  assert.equal(transport.requests.length, 1, 'a firstMs without maxMs keeps the default maxMs');
+  t.mock.timers.tick(1);
+  await until(() => transport.requests.length === 2, 'the second request');
+  await settle();
+  t.mock.timers.tick(999);
+  await settle();
+  assert.equal(transport.requests.length, 2);
+  journal.stop();
+  const create = retry => createIntentJournal({store: memoryIntentStore(), scope: 'alice', locks: serialLocks(), retry});
+  for (const retry of [{firstMs: 0, maxMs: 0}, {firstMs: -1}, {firstMs: Number.NaN}, {maxMs: Infinity}, {firstMs: 2000, maxMs: 1000}, {maxMs: 500}, {firstMs: '10'}]) {
+    assert.throws(() => create(retry), {name: 'TypeError', message: /retry needs positive finite firstMs and maxMs/}, JSON.stringify(retry));
+  }
+  assert.doesNotThrow(() => create({firstMs: 5, maxMs: 5}));
+});
+
 test('a transport failure or an unknown answer leaves the intent pending and retries', async t => {
   t.mock.timers.enable({apis: ['setTimeout']});
   const {storage, transport, hook} = setup({
@@ -609,7 +632,10 @@ test('unreadable storage blocks every admission until discarded', async () => {
   assert.equal(await hook.admit(entry()), 'k1');
 });
 
-test('a write that rejects refuses admission and sends nothing', async () => {
+test('a write that rejects refuses admission, sends nothing and is reported', async t => {
+  const reported = [], previous = globalThis.reportError;
+  globalThis.reportError = error => { reported.push(error); };
+  t.after(() => { globalThis.reportError = previous; });
   const storage = memoryIntentStore();
   storage.failWrites = true;
   const {transport, hook} = setup({storage});
@@ -620,6 +646,7 @@ test('a write that rejects refuses admission and sends nothing', async () => {
   assert.equal(transport.requests.length, 0);
   assert.deepEqual(views, [null]);
   assert.equal(stored(storage), null);
+  assert.deepEqual(reported.map(error => error.name), ['QuotaExceededError']);
   const unreadable = memoryIntentStore();
   unreadable.read = async () => { throw new DOMException('Access is denied.', 'SecurityError'); };
   const other = setup({storage: unreadable});
@@ -629,6 +656,15 @@ test('a write that rejects refuses admission and sends nothing', async () => {
   await settle();
   assert.equal(other.transport.requests.length, 0);
   assert.deepEqual(seen, [], 'a failed read is not shown as an owner without records');
+  assert.deepEqual(reported.map(error => error.name), ['QuotaExceededError', 'SecurityError']);
+  // A refusal because the owner is pending is not a failure.
+  storage.failWrites = false;
+  assert.equal(typeof await hook.admit(entry()), 'string');
+  assert.equal(await hook.admit(entry()), undefined);
+  assert.equal(reported.length, 2);
+  // The host's reads reject instead of reporting an empty journal.
+  await assert.rejects(other.journal.outcomes(), {name: 'SecurityError'});
+  await assert.rejects(other.journal.blocked(), {name: 'SecurityError'});
 });
 
 test('inputs that are not plain JSON values are refused', async () => {
@@ -669,17 +705,22 @@ test('indexedDbIntentStore throws without IndexedDB', () => {
 // A minimal IDBFactory: requests and transactions finish on a later turn, and
 // a transaction's changes are applied just before its complete event.
 function fakeIndexedDB() {
-  const databases = new Map(), opened = [], completed = [], requested = [];
+  const databases = new Map(), opened = [], completed = [], requested = [], held = [];
   const later = callback => setImmediate(callback);
   const factory = {
     opened, completed, requested,
     // When set, the next transaction aborts with this error and changes nothing.
     abortNext: null,
+    // When set, an open waits for release(); blockNext also fires its blocked event.
+    holdOpen: false,
+    blockNext: false,
+    closed: 0,
+    release() { for (const finish of held.splice(0)) later(finish); },
     contents: (name, store) => [...databases.get(name).stores.get(store)],
     open(name, version) {
       opened.push([name, version]);
       const request = {};
-      later(() => {
+      const finish = () => {
         const upgrade = !databases.has(name);
         if (upgrade) databases.set(name, {version, stores: new Map()});
         const database = databases.get(name);
@@ -706,16 +747,53 @@ function fakeIndexedDB() {
             });
             return transaction;
           },
-          close() {}
+          close() { factory.closed++; }
         };
         if (upgrade) request.onupgradeneeded();
         request.onsuccess();
-      });
+      };
+      if (factory.blockNext) {
+        factory.blockNext = false;
+        held.push(finish);
+        later(() => request.onblocked?.());
+      } else if (factory.holdOpen) held.push(finish);
+      else later(finish);
       return request;
     }
   };
   return factory;
 }
+
+test('opening the IndexedDB store rejects when it is blocked or takes 10 seconds', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const factory = fakeIndexedDB();
+  factory.holdOpen = true;
+  const store = indexedDbIntentStore({indexedDB: factory, channel: () => assert.fail('reads open no channel')});
+  let outcome = 'waiting';
+  const first = store.read(storageKey).then(() => { outcome = 'resolved'; }, error => { outcome = error.name; });
+  await settle();
+  t.mock.timers.tick(9999);
+  await settle();
+  assert.equal(outcome, 'waiting');
+  t.mock.timers.tick(1);
+  await first;
+  assert.equal(outcome, 'TimeoutError');
+  // The connection that opens after the timeout is closed, and the next call opens again.
+  factory.release();
+  await settle();
+  assert.equal(factory.closed, 1);
+  factory.holdOpen = false;
+  assert.equal(await store.read(storageKey), null);
+  assert.equal(factory.opened.length, 2);
+
+  const other = indexedDbIntentStore({indexedDB: factory, channel: () => assert.fail('reads open no channel')});
+  factory.blockNext = true;
+  await assert.rejects(other.read(storageKey), {name: 'InvalidStateError', message: /blocked/});
+  factory.release();
+  await settle();
+  assert.equal(factory.closed, 2);
+  assert.equal(await other.read(storageKey), null);
+});
 
 test('the IndexedDB store commits before it resolves and tells the other tabs', async t => {
   const factory = fakeIndexedDB(), channels = [];

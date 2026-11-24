@@ -113,8 +113,11 @@ export interface IntentJournalOptions {
   locks?: LockManager;
   /** Defaults to `crypto.randomUUID()`. */
   createKey?: () => string;
-  /** Backoff after a failure, doubling from `firstMs` up to `maxMs`. Defaults to 1000 and 60000. */
-  retry?: {firstMs: number; maxMs: number};
+  /**
+   * Backoff after a failure, doubling from `firstMs` up to `maxMs`. Each defaults to 1000 and 60000;
+   * both must be positive finite numbers with `firstMs` at most `maxMs`, or the journal throws a TypeError.
+   */
+  retry?: {firstMs?: number; maxMs?: number};
 }
 
 export interface IntentJournal {
@@ -123,9 +126,9 @@ export interface IntentJournal {
   start(): void;
   /** Aborts the requests in flight and sends nothing more until `start`. */
   stop(): void;
-  /** Resolves to the terminal records that no member consumed: `await journal.outcomes()`. */
+  /** Resolves to the terminal records that no member consumed: `await journal.outcomes()`. Rejects when the store cannot be read. */
   outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
-  /** Resolves to the records that cannot be sent: `await journal.blocked()`. */
+  /** Resolves to the records that cannot be sent: `await journal.blocked()`. Rejects when the store cannot be read. */
   blocked(): Promise<ReadonlyArray<BlockedRecord>>;
   /**
    * Removes every record of the scope, pending, terminal and blocked, under the scope's lock, and

@@ -24,10 +24,18 @@ const storagePrefix = 'elnor-intents:';
 const objectStore = 'journals';
 const blockReasons = new Set(['key-conflict', 'epoch', 'mismatch', 'version', 'unknown-operation', 'corrupt']);
 const identityFields = ['journal', 'owner', 'member', 'operation', 'key', 'admittedBy'];
+const defaultRetry = {firstMs: 1000, maxMs: 60000};
+// Opening IndexedDB runs while the scope's lock is held, so it is bounded.
+const openTimeoutMs = 10000;
 
-export function createIntentJournal({store, scope, locks = globalThis.navigator?.locks, createKey = () => crypto.randomUUID(), retry = {firstMs: 1000, maxMs: 60000}} = {}) {
+export function createIntentJournal({store, scope, locks = globalThis.navigator?.locks, createKey = () => crypto.randomUUID(), retry} = {}) {
   if (!locks) throw new TypeError('Durable intents need the Web Locks API');
   if (typeof scope !== 'string' || !scope) throw new TypeError('A journal needs the account scope as a non-empty string');
+  retry = {...defaultRetry, ...retry};
+  const positive = value => typeof value === 'number' && Number.isFinite(value) && value > 0;
+  if (!positive(retry.firstMs) || !positive(retry.maxMs) || retry.firstMs > retry.maxMs) {
+    throw new TypeError('A journal retry needs positive finite firstMs and maxMs, with firstMs at most maxMs');
+  }
   store ??= indexedDbIntentStore();
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
@@ -42,7 +50,6 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
 
   const exclusive = task => locks.request(name, task);
   const read = async () => parseJournal(await store.read(name));
-  const readOrEmpty = () => read().catch(() => parseJournal(null));
   const write = async state => {
     await store.write(name, JSON.stringify({format: 1, epoch: state.epoch, records: state.records}));
     notify(state);
@@ -235,7 +242,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
           await write({...state, records: [...state.records, record]});
           return record.key;
         });
-      } catch {
+      } catch (error) {
+        // The call is refused and nothing is sent; the host hears why.
+        report(error);
         return undefined;
       }
       if (key !== undefined) drive(key);
@@ -295,7 +304,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       adopted.clear();
     },
     async outcomes() {
-      const state = await readOrEmpty();
+      const state = await read();
       if (state.unreadable !== null) return [];
       return state.records.filter(item => valid(item) && item.state === 'terminal').map(record => ({
         id: record.key, journal: record.journal, owner: record.owner, member: record.member, operation: record.operation,
@@ -304,7 +313,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       }));
     },
     async blocked() {
-      const state = await readOrEmpty(), text = state.unreadable;
+      const state = await read(), text = state.unreadable;
       if (text !== null) {
         return [{
           id: corruptId(text), journal: '', owner: '', member: '', operation: '', reason: 'corrupt', export: () => text,
@@ -350,17 +359,32 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
   const listeners = new Set();
   let opening, port;
   // The connection opens on first use. When another page upgrades or deletes
-  // the database, it is closed and the next call opens it again.
+  // the database, it is closed and the next call opens it again. An open that
+  // another connection blocks, or that takes longer than openTimeoutMs,
+  // rejects, so that it cannot hold the scope's lock in every tab; a
+  // connection that opens after that is closed.
   const open = () => opening ??= new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const timer = setTimeout(() => fail(new DOMException('Opening the intent database took too long', 'TimeoutError')), openTimeoutMs);
     const request = factory.open(name, 1);
     request.onupgradeneeded = () => { request.result.createObjectStore(objectStore); };
+    request.onblocked = () => fail(new DOMException('Opening the intent database is blocked by another connection', 'InvalidStateError'));
     request.onsuccess = () => {
       const database = request.result;
+      if (settled) return database.close();
+      settled = true;
+      clearTimeout(timer);
       database.onversionchange = () => { database.close(); opening = undefined; };
       database.onclose = () => { opening = undefined; };
       resolve(database);
     };
-    request.onerror = () => reject(request.error);
+    request.onerror = () => fail(request.error);
   }).catch(error => {
     opening = undefined;
     throw error;

@@ -41,12 +41,16 @@ function notify(subs){
   for(const e of subs){if(e[regionReactionKind]){if(!e.disposed)e.invalidate();}else pending.add(e);}
   if(pending.size&&!scheduled){scheduled=true;queueMicrotask(flush);}
 }
-export function cell(initial){
-  let val=initial;
-  const subs=new Set();
-  return {get value(){if(current&&!current.disposed){subs.add(current);current.deps.add(subs);}return val;},
-    set value(next){if(Object.is(val,next))return;val=next;notify(subs);}};
+// Cells, scopes and effects keep their methods on a prototype: a list row
+// creates several of each, and per-instance closures dominated its allocation.
+// Private fields keep the same encapsulation the closures provided.
+class Cell{
+  #value;#subs=new Set();
+  constructor(initial){this.#value=initial;}
+  get value(){const reader=current;if(reader&&!reader.disposed){this.#subs.add(reader);reader.deps.add(this.#subs);}return this.#value;}
+  set value(next){if(Object.is(this.#value,next))return;this.#value=next;notify(this.#subs);}
 }
+export function cell(initial){return new Cell(initial);}
 
 // Direct state owners get a new identity on every change, including A → B → A.
 export function actionOwnerCell(initial) {
@@ -462,29 +466,36 @@ export function uninitializedBinding(binding){
   ),binding,{code:'ELN-INIT'});};
   return {get value(){return fail();},set value(_next){fail();},get revision(){return fail();}};
 }
-export function scope(){
-  const disposers=[];
-  let disposed=false,safe=true,checks=null;
-  return {get disposed(){return disposed;},get [bulkSafe](){return safe&&(!checks||checks.every(check=>check()));},
-    own(fn,kind,check){
-      if(disposed){fn();return fn;}
-      if(kind!==nativeCleanup)safe=false;
-      if(check)(checks??=[]).push(check);
-      disposers.push(fn);return fn;
-    },dispose(){
-    if(disposed)return;disposed=true;
-    checks=null;
-    try{cleanAll(disposers.reverse());}finally{disposers.length=0;}
-  }};
+class Scope{
+  #disposers=[];#disposed=false;#safe=true;#checks=null;
+  get disposed(){return this.#disposed;}
+  get [bulkSafe](){return this.#safe&&(!this.#checks||this.#checks.every(check=>check()));}
+  own(fn,kind,check){
+    if(this.#disposed){fn();return fn;}
+    if(kind!==nativeCleanup)this.#safe=false;
+    if(check)(this.#checks??=[]).push(check);
+    this.#disposers.push(fn);return fn;
+  }
+  dispose(){
+    if(this.#disposed)return;this.#disposed=true;
+    this.#checks=null;
+    try{cleanAll(this.#disposers.reverse());}finally{this.#disposers.length=0;}
+  }
 }
-export function effect(fn, owner){
-  const e={deps:new Set(),disposed:false,run(){
+export function scope(){return new Scope();}
+class Reaction{
+  constructor(fn){this.deps=new Set();this.disposed=false;this.fn=fn;}
+  run(){
     for(const dep of this.deps)dep.delete(this);
     this.deps.clear();const prev=current;current=this;
-    try{fn();}finally{current=prev;}
-    if(this.deps.size===0)fn=null;
-  }};
-  const dispose=()=>{e.disposed=true;pending.delete(e);for(const dep of e.deps)dep.delete(e);e.deps.clear();fn=null;};
+    // Call without a receiver, as a plain callback.
+    const fn=this.fn;try{fn();}finally{current=prev;}
+    if(this.deps.size===0)this.fn=null;
+  }
+  stop(){this.disposed=true;pending.delete(this);for(const dep of this.deps)dep.delete(this);this.deps.clear();this.fn=null;}
+}
+export function effect(fn, owner){
+  const e=new Reaction(fn),dispose=()=>e.stop();
   ownNative(owner,dispose);
   try{if(!e.disposed)e.run();}catch(error){dispose();throw error;}
   return dispose;
@@ -764,6 +775,14 @@ function clearRegion(parent,end,rows,suppressDescendants=true){
   if(cleanupFailed)failWithCleanup(cleanupError,()=>parent.replaceChildren(end),'Region cleanup and DOM removal failed');
   parent.replaceChildren(end);
 }
+// A keyed row reads its nodes and move state through its part, which may
+// replace nodes with a range getter. Accessors live on the prototype.
+class ListRow{
+  constructor(item,part){this.item=item;this.part=part;this.owner=part.owner;this.index=-1;}
+  get nodes(){return this.part.nodes;}
+  get moving(){return this.part.moving;}
+  set moving(value){this.part.moving=value;}
+}
 export function repeat(parent,read,key,build,owner,exclusive=false,detached=false){
   const end=document.createComment('elnor:each');parent.append(end);
   let rows=new Map(),active=true;
@@ -801,7 +820,7 @@ export function repeat(parent,read,key,build,owner,exclusive=false,detached=fals
           const part=detached?createRootPart(build,item,stage):createPart((fragment,childOwner)=>build(item,fragment,childOwner),stage,true);
           staged.delete(part);
           if(!active){clearPart(part);return;}
-          row={item,owner:part.owner,index:-1};Object.defineProperty(row,'nodes',{get:()=>part.nodes});Object.defineProperty(row,'moving',{get:()=>part.moving,set:value=>{part.moving=value;}});
+          row=new ListRow(item,part);
           staged.add(row);
         }else{
           if(row.index<last)increasing=false;last=row.index;
@@ -848,13 +867,23 @@ export function mountBoundary(target,render){
   return mountDisposer(root,created);
 }
 
+// defineProperty copies the descriptor, so one shared descriptor serves every
+// prop. The getters stay enumerable, non-configurable and without a setter.
+const propDescriptor={enumerable:true,get:undefined};
+function readOnlyProps(propReaders){
+  const props={};
+  for(const name in propReaders){
+    if(!Object.hasOwn(propReaders,name))continue;
+    propDescriptor.get=propReaders[name];
+    Object.defineProperty(props,name,propDescriptor);
+  }
+  propDescriptor.get=undefined;
+  return props;
+}
 // Child components get live, read-only getters for props. No parent re-render is
 // needed: reading a getter inside a child effect tracks the parent signal.
 export function mountComponent(parent, mountChild, propReaders, handlers, slots, owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   const cleanup=mountChild(parent,props,handlers,slots);
   owner?.own(cleanup);
 }
@@ -862,17 +891,11 @@ export function mountComponent(parent, mountChild, propReaders, handlers, slots,
 // Public mounts retain their own boundary; no DOM snapshot or nested disposer
 // is needed for a child whose caller already owns the region.
 export function renderComponent(parent,renderChild,propReaders,handlers,slots,owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   renderChild(parent,props,handlers,slots,owner);
 }
 export function createComponentRoot(renderChild,propReaders,handlers,slots,owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   return renderChild(null,props,handlers,slots,owner);
 }
 export function renderSlot(parent,renderer,owner){

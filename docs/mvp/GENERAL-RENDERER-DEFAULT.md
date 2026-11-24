@@ -55,8 +55,9 @@ margin here.
 
 - The region cohorts were measured in an earlier session with an earlier frozen
   source, so the comparison between backends is descriptive, not paired.
-- Keyed1000 in cohort 2 is at 1.098, close to the margin. List creation is the
-  first candidate for optimizing the general renderer.
+- Keyed1000 in cohort 2 is at 1.098, close to the margin. The
+  [prototype runtime records](PROTOTYPE-RUNTIME-RECORDS.md) later brought list
+  creation within the margin.
 - This matrix does not cover React, delivery size, startup or memory. The
   [competitive performance contract](PERFORMANCE-TARGET.md) still applies.
 

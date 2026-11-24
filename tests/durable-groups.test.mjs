@@ -471,6 +471,99 @@ test('a member without parameters or an outcome name resumes its body', async t 
   assert.deepEqual(records(journal.storage), []);
 });
 
+// A state or calc declared before the owner, which may itself be a state or a
+// calc, can read a status. During the component's initialization the status
+// is idle, and the watch starts in the microtask after the group is created,
+// once the owner exists.
+const earlyState = `import type {DurableOperation} from "./intents.d.mts";
+
+component EarlyState(tasks: {update: DurableOperation<{id: string; title: string}, {revision: number}, {kind: string}>}, first: string) {
+  state early = save.status;
+  state taskId = first;
+  action group editing(taskId) durable "task-edit"
+
+  action async save(edit: {id: string; title: string}) in editing {
+    await tasks.update(edit);
+  }
+
+  ui {
+    section {
+      p early
+      p (save.status)
+    }
+  }
+}
+`;
+
+const earlyCalc = `import type {DurableOperation} from "./intents.d.mts";
+
+component EarlyCalc(tasks: {update: DurableOperation<{id: string; title: string}, {revision: number}, {kind: string}>}, first: string) {
+  calc label = save.status;
+  calc busy = editing.pending;
+  calc taskId = first;
+  action group editing(taskId) durable "task-edit"
+
+  action async save(edit: {id: string; title: string}) in editing {
+    await tasks.update(edit);
+  }
+
+  ui {
+    section {
+      p label
+      p (String(busy))
+    }
+  }
+}
+`;
+
+const earlySingleFlight = `component EarlyFlight(start: number) {
+  state early = bump.status;
+  calc label = bump.status;
+  calc busy = work.pending;
+  state count = start;
+  action group work(count) single-flight
+  action async bump() in work { count = count + 1; }
+
+  ui {
+    section {
+      p early
+      p label
+      p (String(busy))
+    }
+  }
+}
+`;
+
+test('a state or calc declared before the owner reads the status as idle and then shows the stored intent', async t => {
+  const pending = {
+    format: 1, journal: 'task-edit', scope: 'alice', owner: '"t1"', member: 'save', operation: 'tasks.update', version: 1,
+    key: 'stored', epoch: 'E1', params: [{id: 't1', title: 'A'}], input: {id: 't1', title: 'A'}, state: 'pending', admittedBy: 'earlier-page'
+  };
+  const journal = setup({storage: memoryStorage(JSON.stringify({format: 1, epoch: 'E1', records: [pending]}))});
+  t.after(() => journal.journal.stop());
+  const props = {tasks: {update: journal.update}, first: 't1'};
+  const texts = root => root.descendants('p').map(node => node.textContent);
+
+  const state = await import(pathToFileURL(compile(directory, 'EarlyState', earlyState).entry));
+  const stateRoot = new FakeNode('root');
+  t.after(state.mount(stateRoot, props));
+  assert.deepEqual(texts(stateRoot), ['idle', 'idle']);
+  await settle();
+  assert.deepEqual(texts(stateRoot), ['idle', 'pending'], 'the state keeps its initial value and the status loads');
+
+  const calc = await import(pathToFileURL(compile(directory, 'EarlyCalc', earlyCalc).entry));
+  const calcRoot = new FakeNode('root');
+  t.after(calc.mount(calcRoot, props));
+  assert.deepEqual(texts(calcRoot), ['idle', 'false']);
+  await settle();
+  assert.deepEqual(texts(calcRoot), ['pending', 'true']);
+
+  const flight = await import(pathToFileURL(compile(directory, 'EarlyFlight', earlySingleFlight).entry));
+  const flightRoot = new FakeNode('root');
+  t.after(flight.mount(flightRoot, {start: 1}));
+  assert.deepEqual(texts(flightRoot), ['idle', 'idle', 'false']);
+});
+
 test('the members of a group need operations of one journal', t => {
   const one = setup(), two = setup();
   t.after(() => { one.journal.stop(); two.journal.stop(); });

@@ -110,8 +110,10 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     if (next !== undefined) unwatch = hook.watch(journal, next, view => observe(next, view), names);
   }
 
-  // Watching starts after the component's state exists: on the first read of
-  // a status, the first call, or the microtask after the group is created.
+  // Watching starts after the component's state exists: on the first call or
+  // in the microtask after the group is created. Reading a status does not
+  // start it, because a state or calc declared before the owner reads the
+  // status while the owner does not exist yet; until then the status is idle.
   function start() {
     if (started || ownerScope.disposed || !hook) return;
     started = true;
@@ -134,7 +136,6 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
   const journalOf = member => untracked(member.read)?.[durableHook]?.journal;
 
   const visible = name => {
-    start();
     const entry = shown.value;
     // A corrupt record names no member and blocks them all.
     if (!entry || (entry.member !== name && entry.member !== '') || entry.owner !== ownerKey()) return idleAction;
@@ -179,7 +180,6 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
   }
 
   return {member, get pending() {
-    start();
     const entry = shown.value;
     return !!entry && entry.state === 'pending' && entry.owner === ownerKey();
   }};

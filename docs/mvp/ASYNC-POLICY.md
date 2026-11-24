@@ -483,7 +483,9 @@ of the same group and owner has the pending or blocked intent, although
 calling it is refused. In a group with several members, check the other
 members' status for `blocked` too. Before the journal's first read the member
 reports `idle`; a call made then is still checked against storage, so no write
-is lost.
+is lost. A state initialized from a status therefore starts as `idle`, while a
+calc follows the status once it loads, even when it is declared before the
+owner.
 
 ### The host
 

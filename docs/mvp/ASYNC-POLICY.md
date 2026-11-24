@@ -11,10 +11,10 @@ This guide connects the implemented pieces; it does not introduce an API.
 |---|---|---|
 | Replace an obsolete read, such as search | [OwnedSearch](../../examples/async-search/OwnedSearch.eln) | Capture a generation, invalidate earlier work and publish only the current result; own pending/error state |
 | Submit one write at a time | [OwnedSave](../../examples/async-save/OwnedSave.eln) | Reject duplicate pending submissions, freeze key/payload and correlate the receipt; require the provider's replay contract |
-| Recover a write after page reload | [RecoverableSave](../../examples/recoverable-save/RecoverableSave.eln) | Store the scoped intent before sending, query authoritative status, retry the same intent only after confirmed absence, acknowledge terminal outcomes |
+| Recover a write after page reload | The `durable` action group policy in [DurableSave](../../examples/durable-save/DurableSave.eln); the handwritten [RecoverableSave](../../examples/recoverable-save/RecoverableSave.eln) for comparison | Create one journal per account in the host and use a provider that implements the [intent protocol](DURABLE-INTENTS-DESIGN.md#protocol); handle the outcome after the member's `await`. See [durable intents](#durable-intents) |
 | Reuse invocation guards | [ManagedSearch and ManagedSave](OPERATION-HELPER.md) | Opt into the local TS helper while keeping business state, lifecycle registration and write identity explicit |
 | Retire work with a component | [Component disposal](COMPONENT-DISPOSAL.md) | Register synchronous cleanup, invalidate publication and request cooperative abort; do not expect an awaited cleanup or remote rollback |
-| Preserve every accepted operation | The `queue` action group policy below | Choose its capacity; the queue keeps order, continues after a failure and drops waiting calls when the owner changes. It is not persistent, so durable operations also need the [recovery journal](RECOVERY-JOURNAL.md) |
+| Preserve every accepted operation | The `queue` action group policy below | Choose its capacity; the queue keeps order, continues after a failure and drops waiting calls when the owner changes. It is not persistent; a write that must survive a reload needs a [durable group](#durable-intents) |
 
 A latest-response policy suppresses obsolete publication; it does not serialize
 remote mutations. Single-flight admission is local to its owner and does not
@@ -139,8 +139,8 @@ outcome.
   calls are kept. A failure leaves its error on that member and the queue
   continues with the next call. A call from a new owner, or unmounting the
   component, drops the waiting calls. The queue lives in memory, so a page
-  reload loses the waiting calls; durable writes still need the
-  [recovery journal](RECOVERY-JOURNAL.md).
+  reload loses the waiting calls. A write that must survive a reload uses
+  a [durable group](#durable-intents) instead.
 - Any policy may add a timeout, from `1ms` to `3600s`, as in
   `latest timeout 10s` or `queue 20 timeout 30s`. An invocation that runs
   longer is retired, and its member reports a `TimeoutError` in `error`.
@@ -375,3 +375,156 @@ use it in a `for await` head. The group does not undo the effects of an
 external request. State protection applies to binding assignments, so
 application code still owns in-place mutation and side effects outside
 Surface.
+
+## Durable intents
+
+A `durable` group stores each call as an intent in a journal before anything
+is sent. The journal sends it until the provider decides an outcome, and the
+member's body resumes with that outcome, in the same page or in a later one
+after a reload. The [design](DURABLE-INTENTS-DESIGN.md) gives the full rules
+and the protocol. [DurableSave](../../examples/durable-save/README.md) is the
+example, and it rewrites the handwritten
+[RecoverableSave](../../examples/recoverable-save/RecoverableSave.eln).
+
+```elnor
+action group editing(note.id) durable "note-edit"
+
+action async save(edit: NoteEdit) in editing {
+  const outcome = await notes.save(edit);
+  if (outcome.status === "applied") {
+    revision = outcome.result.revision;
+  } else if (outcome.status === "rejected") {
+    message = outcome.reason.kind === "conflict" ? "Review the other change" : "Not saved";
+  }
+}
+```
+
+### The group and its members
+
+- The string after `durable` is the journal name. It is stored with every
+  intent, so it must stay the same between releases while intents may exist.
+  Two groups with the same name in one build are an error. The policy takes
+  only the name, with no other policy word or timeout.
+- The owner must be a string, a number or a list of them, because it is part
+  of the stored identity. An object owner is an error.
+- The first statement of a member awaits one call to a durable operation
+  reached through a prop, as in `const outcome = await notes.save(edit);` or
+  `await notes.save(edit);`. It is the only `await` in the body. A call to a
+  durable operation anywhere else is an error, so a write through it cannot
+  skip the journal.
+- Parameters, the operation input and the operation result must be JSON types,
+  because the journal stores them. The checks read declared types: `any`
+  passes the owner and JSON checks and `{}` passes the JSON checks, so the
+  compiler cannot check what those types hold.
+
+The syntax is tested in
+[durable-syntax.test.mjs](../../tests/durable-syntax.test.mjs) and the types
+in [durable-types.test.mjs](../../tests/durable-types.test.mjs).
+
+### Resuming the body
+
+The resume point of a member is its `await`. The rest of the body runs when
+the outcome is known. If the outcome arrives in a later page, the body runs in
+that page with the member's parameters restored from the journal, and
+`outcome.late` is true. Component state read after the `await` is the state of
+the component that resumes. The editor does not mark the `await` as the resume
+point yet, and the language service has no hover or inlay hint for it; that is
+future work.
+
+Awaiting a member call yields the body's return value when the outcome
+arrives in the same page, and `undefined` when the call was refused or the
+outcome was handled elsewhere. If the rest of the body throws, the error goes
+to `reportError` once and the record is removed.
+
+Each outcome has one consumer. When two mounted instances observe the same
+record, one resumes the body and both show the status. If the page ends after
+the body ran and before the record was removed, the next page resumes it again
+with `late` true. The rest of the body can therefore run more than once per
+intent, but not concurrently.
+
+An owner change or an unmount does not retire an intent. It keeps being sent,
+and a component that mounts the same group with the same owner observes it.
+
+These rules are tested in
+[durable-groups.test.mjs](../../tests/durable-groups.test.mjs), which mounts
+compiled components on a fake DOM.
+
+### Status
+
+| Status | Meaning |
+| --- | --- |
+| `idle` | No intent of this member for the current owner |
+| `pending` | Stored and not decided: being sent, or retrying after a failure |
+| `success` | Applied; `result` holds the operation result |
+| `rejected` | Rejected by the provider; `reason` holds the typed reason, such as a conflict |
+| `unconfirmed` | The provider no longer keeps the result, but will not apply the intent again |
+| `blocked` | The record cannot be sent safely; the host must review it |
+
+There is no `error` status: a transport failure leaves the intent pending. The
+group exposes `pending`. A call while the owner has a pending or blocked
+intent is refused. The members of a group share the owner, and a member's
+`status` is `idle` while another member of the same group and owner has the
+pending or blocked intent, although calling it is refused. Disable its button
+with the group's `pending` or with the other member's status.
+
+### The host
+
+```ts
+const journal = createIntentJournal({storage: localStorage, scope: account.id});
+const transport = httpIntentTransport({baseUrl: "/api/intents", headers: () => session.headers()});
+const notes = {save: journal.operation<NoteEdit, NoteSaved, NoteRejection>("notes.save", {version: 1, transport})};
+journal.start();
+```
+
+- `scope` partitions the storage by account. Call `journal.stop()` before the
+  session ends or changes, and create another journal for the next account.
+  When the provider answers that the scope does not belong to the session, the
+  intent stays pending, the journal stops sending and `onPaused` reports it.
+- `journal.outcomes()` lists outcomes that no member consumed, each with
+  `acknowledge()`. `journal.blocked()` lists blocked records, each with
+  `export()` and `discard()`. Until a blocked record is discarded, its owner
+  admits no new intent.
+- The operation's name and version are stored with the intent. A record whose
+  operation the journal does not know, or whose version differs, is blocked
+  and never sent with another input shape. Two tabs running different
+  releases follow the same rule: the older tab blocks records that the newer
+  one admitted under a new operation or version.
+- Storage that fails at admission refuses the call and sends nothing.
+
+The journal and the transport are tested in
+[intents-journal.test.mjs](../../tests/intents-journal.test.mjs) and
+[intents-http.test.mjs](../../tests/intents-http.test.mjs). The second one runs
+against the [reference provider](../../examples/durable-save/provider_fixture.py),
+which [durable-provider.test.mjs](../../tests/durable-provider.test.mjs) tests
+on its own.
+
+### Security
+
+The journal stores inputs and parameters in plain text in origin storage,
+readable by any script of the origin. Secrets must not be durable inputs; the
+compiler cannot know which values are secret. A journal only reads and sends
+intents of its scope, and the scope is not an authentication boundary.
+
+### Cost and evidence
+
+The compiler emits `durable-runtime.mjs` only for a graph with a durable group.
+A graph without one emits no durable runtime and imports nothing from it. A
+component with a durable group renders through the general renderer, like any
+component with an action group.
+
+DurableSave and its host take 66 nonblank lines, against 196 for the
+handwritten view and client, below the limit of 98 that the design set. Its
+delivery, with `intents.mjs` (19923 bytes) and `durable-runtime.mjs` (7394
+bytes) counted, is 33534 JS bytes and 10349 gzip-9 bytes, summed over the
+files. The handwritten version measured the same way on the same branch is
+15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
+reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude
+`runtime.mjs`, and neither is minified. The two journal files are shared by
+every durable component of an application. The
+[example](../../examples/durable-save/README.md#comparison-with-the-handwritten-version)
+lists what each version does.
+
+The behavior above is covered by Node.js tests, with a lock manager passed by
+the test and, for components, a fake DOM. Acceptance in headless Edge against
+the reference provider, including reloads, two tabs and an account change, has
+not run yet.

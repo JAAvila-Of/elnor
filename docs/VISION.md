@@ -53,8 +53,13 @@ after confirming that it was not applied, and versioned writes in the
 [persistent Task desk](mvp/PERSISTENT-TASK-DESK.md). The
 [durable intents design](mvp/DURABLE-INTENTS-DESIGN.md) turns them into a
 `durable` action group policy and defines the protocol that both the client
-and a future server half speak. It is not implemented yet, so no behavior is
-promised beyond that design.
+and a future server half speak. The client half is implemented: a
+[durable group](mvp/ASYNC-POLICY.md#durable-intents) stores each call in a
+journal, sends it until the provider decides and resumes the body with the
+outcome after a reload. [DurableSave](../examples/durable-save/README.md)
+rewrites the recovery example in 66 nonblank lines instead of 196. Node.js
+tests cover it against a reference provider; acceptance in a browser has not
+run yet, and the server half waits for the server actions of CAP-08.
 
 ## 3. Verified guarantees
 

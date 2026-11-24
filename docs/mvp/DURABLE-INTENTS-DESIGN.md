@@ -1,6 +1,10 @@
 # Durable intents design
 
-Status: design for review. Nothing in this document is implemented.
+Status: the client half is implemented and covered by Node.js tests; the
+headless Edge acceptance below has not run yet, and the server half waits for
+CAP-08. [Durable intents](ASYNC-POLICY.md#durable-intents) describes the
+implemented behavior and [DurableSave](../../examples/durable-save/README.md)
+is the example.
 
 ## Intent
 
@@ -157,8 +161,9 @@ values too. Locals declared before the `await` do not exist, because the call
 is the first statement. Component state read after the `await` is the state
 of the component that resumes, which after a reload may have been loaded
 since. `outcome.late` is true when the intent was admitted by an earlier page
-or another tab, so the body can avoid overwriting newer data. The editor marks
-the `await` as the point where a later page resumes.
+or another tab, so the body can avoid overwriting newer data. The `await` is
+the point where a later page resumes. The editor does not mark it yet, and the
+language service has no hover or inlay hint for it; that is future work.
 
 Awaiting a member call yields the body's return value when the outcome
 arrives in the same page, and `undefined` when the call was refused or the

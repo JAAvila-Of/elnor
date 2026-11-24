@@ -249,9 +249,14 @@ member name, the operation name and version, the key, the epoch, the input
 and, once known, the outcome. The journal name, member names and operation
 names are persisted identities: renaming one leaves existing records without
 a consumer, and the host sees them through `await journal.outcomes()` and
-`await journal.blocked()`. The host declares an operation version; a record whose
-operation is unknown or whose version differs is blocked, never sent with a
-different input shape.
+`await journal.blocked()`. The host declares an operation version, and a record
+is never sent with a different input shape. A record whose version is lower
+than the one the journal registered is blocked. A record whose version is
+higher, or whose operation the journal does not know, was admitted by a newer
+release in another tab during a rolling deploy: it stays pending and unsent in
+this journal, so a tab running the newer release sends it, and until then its
+owner admits no new intent. `blocked()` does not list it; it waits for a
+release that knows it.
 
 ## Host
 

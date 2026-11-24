@@ -139,6 +139,8 @@ provider refuses the session's account.
   checks and `{}` passes the JSON checks, so the compiler cannot check what
   those types hold.
 - Two tabs running different releases: a tab whose journal does not know an
-  operation or its new version blocks records that the newer tab admitted.
+  operation, or knows an older version of it, leaves the records that the
+  newer tab admitted pending and unsent until a tab with the newer release
+  sends them. A record of an older version than the journal's is blocked.
 - Browser storage clearing, real authentication and production retention are
   outside this fixture.

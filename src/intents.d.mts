@@ -62,7 +62,12 @@ export interface UnconsumedOutcome {
   acknowledge(): Promise<void>;
 }
 
-/** A record that cannot be sent safely. Until it is discarded, its owner admits no new intent. */
+/**
+ * A record that cannot be sent safely. Until it is discarded, its owner admits no new intent.
+ * `version` means the record's operation version is older than the journal's. `unknown-operation`
+ * is only found in records blocked by an earlier release: a record of an unknown operation, or of
+ * a newer version, now stays pending for a tab that knows it, and is not listed here.
+ */
 export interface BlockedRecord {
   readonly id: string;
   journal: string;

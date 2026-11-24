@@ -169,7 +169,10 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     }
   }
 
-  // Blocks records this journal cannot send and drives the rest.
+  // Blocks records of an older operation version and drives the records this
+  // journal can send. A record of a newer version, or of an operation this
+  // journal does not know, was admitted by a newer release in another tab:
+  // it stays pending, unsent, for a tab that knows it.
   async function reconcile() {
     let keys;
     try {
@@ -180,13 +183,12 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
         const records = state.records.map(item => {
           if (!valid(item) || item.state !== 'pending') return item;
           const operation = operations.get(item.operation);
-          const reason = !operation ? 'unknown-operation' : operation.version !== item.version ? 'version' : null;
-          if (!reason) return item;
+          if (!operation || item.version >= operation.version) return item;
           changed = true;
-          return block(item, reason);
+          return block(item, 'version');
         });
         if (changed) await write({...state, records});
-        return records.filter(item => valid(item) && item.state === 'pending').map(item => item.key);
+        return records.filter(item => valid(item) && item.state === 'pending' && sendable(item)).map(item => item.key);
       });
     } catch {
       return;

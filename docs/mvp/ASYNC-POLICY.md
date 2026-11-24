@@ -496,11 +496,11 @@ journal.start();
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,
   its owner admits no new intent.
-- The operation's name and version are stored with the intent. A record whose
-  operation the journal does not know, or whose version differs, is blocked
-  and never sent with another input shape. Two tabs running different
-  releases follow the same rule: the older tab blocks records that the newer
-  one admitted under a new operation or version.
+- The operation's name and version are stored with the intent, and a record
+  is never sent with another input shape. A record of an older version than
+  the journal's is blocked. A record of a newer version, or of an operation
+  the journal does not know, stays pending and unsent, so that a tab running
+  the newer release sends it; `blocked()` does not list it.
 - Storage that fails at admission refuses the call and sends nothing.
 
 The journal and the transport are tested in

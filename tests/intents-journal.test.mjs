@@ -515,16 +515,36 @@ test('a started journal sends a pending intent that another tab admitted and lef
   other.journal.stop();
 });
 
-test('operation version and unknown operation block', async () => {
-  const storage = seeded([record({key: 'a'}), record({key: 'b', owner: '"t2"', operation: 'tasks.archive'})]);
-  const {transport, journal} = setup({storage, version: 2, start: false});
+test('an older operation version blocks, while a newer version or an unknown operation waits for a release that knows it', async () => {
+  const storage = seeded([
+    record({key: 'a'}), record({key: 'b', owner: '"t2"', operation: 'tasks.archive'}), record({key: 'c', owner: '"t3"', version: 3})
+  ]);
+  const locks = serialLocks();
+  const {transport, journal, hook} = setup({storage, locks, version: 2, start: false});
   assert.deepEqual(await journal.blocked(), []);
+  const views = [];
+  hook.watch('task-edit', '"t3"', view => views.push(view?.state ?? null));
   journal.start();
-  await until(() => stored(storage).records.every(item => item.state === 'blocked'), 'both blocks');
+  await until(() => stored(storage).records[0].state === 'blocked', 'the block of the older version');
   await settle();
-  assert.deepEqual(stored(storage).records.map(item => [item.key, item.reason]), [['a', 'version'], ['b', 'unknown-operation']]);
-  assert.deepEqual((await journal.blocked()).map(item => [item.id, item.reason]), [['a', 'version'], ['b', 'unknown-operation']]);
-  assert.equal(transport.requests.length, 0);
+  assert.deepEqual(stored(storage).records.map(item => [item.key, item.state, item.reason]), [['a', 'blocked', 'version'], ['b', 'pending', undefined], ['c', 'pending', undefined]]);
+  assert.deepEqual((await journal.blocked()).map(item => [item.id, item.reason]), [['a', 'version']]);
+  assert.equal(transport.requests.length, 0, 'records this release cannot send are not sent');
+  assert.deepEqual(views, ['pending']);
+  assert.equal(await hook.admit(entry({owner: '"t3"', version: 2})), undefined, 'the waiting record still holds its owner');
+  journal.stop();
+
+  // A tab with the newer release sends what the older one left pending.
+  const newer = createIntentJournal({store: storage, scope: 'alice', locks, createKey: keys()});
+  const sent = scriptedTransport([applied('E1'), applied('E1')]);
+  newer.operation('tasks.update', {version: 3, transport: sent});
+  newer.operation('tasks.archive', {version: 1, transport: sent});
+  newer.start();
+  await until(() => stored(storage).records.filter(item => item.state === 'terminal').length === 2, 'the waiting records sent');
+  await settle();
+  assert.deepEqual(sent.requests.map(request => request.key).sort(), ['b', 'c']);
+  assert.equal(stored(storage).records[0].state, 'blocked');
+  newer.stop();
 });
 
 test('admission refuses an operation version the journal does not know', async () => {

@@ -50,9 +50,11 @@ reconciled with the server's authoritative state.
 The building blocks exist as application patterns: the
 [recovery journal](mvp/RECOVERY-JOURNAL.md), which retries the same intent only
 after confirming that it was not applied, and versioned writes in the
-[persistent Task desk](mvp/PERSISTENT-TASK-DESK.md). Turning them into a
-declared group policy is open design work. Reconciliation and conflicts are
-hard problems, so no behavior is promised before that design exists.
+[persistent Task desk](mvp/PERSISTENT-TASK-DESK.md). The
+[durable intents design](mvp/DURABLE-INTENTS-DESIGN.md) turns them into a
+`durable` action group policy and defines the protocol that both the client
+and a future server half speak. It is not implemented yet, so no behavior is
+promised beyond that design.
 
 ## 3. Verified guarantees
 
@@ -101,5 +103,5 @@ the verified guarantees, as it already does for the experimental hot update.
 
 1. More compiler diagnostics for the guarantees in part 3, after the stale
    write and unowned work warnings.
-2. A design for durable intents, including identity, retries, reconciliation
-   and conflicts, before any implementation.
+2. The client half of [durable intents](mvp/DURABLE-INTENTS-DESIGN.md),
+   tested against the reference provider.

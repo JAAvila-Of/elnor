@@ -588,9 +588,9 @@ has no IndexedDB, so there the IndexedDB store is only tested against a
 minimal fake of it. The
 [acceptance in headless Edge](DURABLE-INTENTS-DESIGN.md#results) against the
 reference provider, including reloads, two tabs and an account change, passed
-all 24 checks in 5 consecutive runs on the final code, with no page errors.
-Earlier runs on the same code with an intermediate harness had one job that
-timed out because of how the harness released a blocked IndexedDB open, and
-the check of a failed first read depends on how Edge queues opens behind a
-blocked upgrade. A forced kill of the browser or of the operating system with a pending intent
+all 26 checks in 5 consecutive runs at commit `c5ae4c2`, with no page errors.
+Earlier runs with an intermediate harness had one job that timed out because
+of how the harness released a blocked IndexedDB open, and the checks of a
+failed first read depend on how Edge queues opens behind a blocked upgrade. A
+forced kill of the browser or of the operating system with a pending intent
 was not tested.

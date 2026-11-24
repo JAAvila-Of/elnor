@@ -109,9 +109,9 @@ lock manager and an in-memory store passed by the test; Node.js has no
 IndexedDB, so there the IndexedDB store is only tested against a minimal fake
 of it. In headless Edge 157 the
 [acceptance](../../docs/mvp/DURABLE-INTENTS-DESIGN.md#results), including two
-tabs, passed all 24 checks in each of 5 consecutive runs on the final code,
-with no page errors. A forced kill of the browser or of the operating system with
-a pending intent was not tested.
+tabs, passed all 26 checks in each of 5 consecutive runs at commit `c5ae4c2`,
+with no page errors. A forced kill of the browser or of the operating system
+with a pending intent was not tested.
 
 ## Comparison with the handwritten version
 

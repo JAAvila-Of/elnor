@@ -506,33 +506,39 @@ Edge against the reference provider:
 
 ### Results
 
-The acceptance ran in headless Edge 157 against the reference provider, on
-the final code (commit `e99cdae`). Five consecutive contained runs passed all
-24 checks each, with no page errors and no CSP violations. The checks cover
-the list above and five more: a calc label that reflects a member's status; an
-orphan outcome of an undeclared member that does not block the owner's next
-outcome; an answer that arrives for a record another tab blocked by version; a
-started tab that adopts a pending intent a closed tab left, without an online
-event or a reload; and reconciliation after a failed first read, induced by
-holding an IndexedDB connection that blocks a version upgrade past the 10 s
-open bound. That check depends on how Edge queues opens behind a blocked
-upgrade. Earlier runs on the same code, with an intermediate version of the
-harness, had one job that timed out because of how the harness released the
-blocked open.
+The acceptance ran in headless Edge 157 against the reference provider, at
+commit `c5ae4c2`. Five consecutive contained runs passed all 26 checks each,
+with no page errors and no CSP violations. The checks cover the list above and
+seven more: a calc label that reflects a member's status; an orphan outcome of
+an undeclared member that does not block the owner's next outcome; an answer
+that arrives for a record another tab blocked by version; a started tab that
+adopts a pending intent a closed tab left, without an online event or a
+reload; an outcome of operation version 1 that a version 2 group does not
+resume and that `journal.outcomes()` lists, while version 2 consumes its own
+outcome; reconciliation after a failed first read, induced by holding an
+IndexedDB connection that blocks a version upgrade past the 10 s open bound;
+and, after that failed first read with no pending record, a view that ends up
+showing Blocked without an online event or a reload, with nothing sent. The
+failed-read checks depend on how Edge queues opens behind a blocked upgrade.
+Earlier runs, with an intermediate version of the harness, had one job that
+timed out because of how the harness released the blocked open.
 
 Two tabs that each made 200 locked read-modify-writes of one counter reached
 400 of 400 in all 20 counts through IndexedDB. The localStorage contrast lost
-between 1 and 9 of 400 in a private profile and up to 76 with a profile on
-disk. The 399, 398 and 347 given earlier come from the separate diagnostic
-described under Host.
+between 1 and 29 of 400 in a private profile and between 1 and 35 with a
+profile on an NVMe SSD. The 399, 398 and 347 given earlier come from the
+separate diagnostic described under Host.
 
 Admission latency was measured with 50 admissions per run and context, strict
 durability and the CPU limited to 10%. With the profile on an NVMe SSD the
-median was between 1.4 and 1.6 ms, the p95 between 1.7 and 17.3 ms and the
-maximum 859 ms. In a private profile, which is likely in memory, the median
-was between 0.8 and 1.0 ms. An earlier round, with the profile on a shared
+median was between 1.4 and 1.6 ms and the p95 between 1.8 and 3.2 ms. In a
+private profile, which is likely in memory, the median was between 0.8 and
+1.0 ms, with one peak of 330 ms. An earlier round, with the profile on a shared
 SATA hard disk, gave a median of 50.6 to 65.5 ms and a p95 of 98.7 to
 210.4 ms, so these figures depend on disk speed and contention.
+
+Not tested: a forced kill of the browser or of the operating system with a
+pending intent.
 
 A forced kill of the browser or of the operating system with a pending intent
 has not been tested.

@@ -60,7 +60,7 @@ outcome after a reload. [DurableSave](../examples/durable-save/README.md)
 rewrites the recovery example in 67 nonblank lines instead of 196. Node.js
 tests cover it against a reference provider, and the
 [acceptance in headless Edge](mvp/DURABLE-INTENTS-DESIGN.md#results) passed
-all 24 checks in 5 consecutive runs on the final code. The server
+all 26 checks in 5 consecutive runs at commit `c5ae4c2`. The server
 half waits for the server actions of CAP-08.
 
 ## 3. Verified guarantees

@@ -144,7 +144,11 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       waiting.delete(key);
       attempts.delete(key);
     }
-    if (!running || paused || inFlight.has(key) || waiting.has(key)) return;
+    // The backoff of a key belongs to its waiting retry or its request in
+    // flight; a drive that leaves neither removes it, so a record that is no
+    // longer pending leaves no step behind for a later adoption.
+    const release = () => { if (!inFlight.has(key) && !waiting.has(key)) attempts.delete(key); };
+    if (!running || paused || inFlight.has(key) || waiting.has(key)) return release();
     const controller = new AbortController();
     inFlight.set(key, controller);
     try {
@@ -186,7 +190,10 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       // Storage failed while the answer was recorded; the replay is safe.
       schedule(key);
     } finally {
-      if (inFlight.get(key) === controller) inFlight.delete(key);
+      if (inFlight.get(key) === controller) {
+        inFlight.delete(key);
+        release();
+      }
     }
   }
 

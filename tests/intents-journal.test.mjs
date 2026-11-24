@@ -563,6 +563,29 @@ test('a started journal sends a pending intent that another tab admitted and lef
   other.journal.stop();
 });
 
+test('an adoption that finds the record no longer pending leaves no backoff behind', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
+  const observer = setup({storage: memoryIntentStore(values), retry: {firstMs: 1000, maxMs: 60000}, answers: [applied('E1')]});
+  const tab = memoryIntentStore(values);
+  const journalOf = records => JSON.stringify({format: 1, epoch: 'E1', records});
+  await settle();
+  // Another tab admits an intent, then removes it before the adoption fires.
+  await tab.write(storageKey, journalOf([record()]));
+  await settle();
+  await tab.write(storageKey, journalOf([]));
+  await settle();
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(observer.transport.requests.length, 0);
+  // The same record is left pending again: it is adopted after the first step.
+  await tab.write(storageKey, journalOf([record()]));
+  await settle();
+  t.mock.timers.tick(1000);
+  await until(() => observer.transport.requests.length === 1, 'the adopted request after one first step');
+  observer.journal.stop();
+});
+
 test('an older operation version blocks, while a newer version or an unknown operation waits for a release that knows it', async () => {
   const storage = seeded([
     record({key: 'a'}), record({key: 'b', owner: '"t2"', operation: 'tasks.archive'}), record({key: 'c', owner: '"t3"', version: 3})

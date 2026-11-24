@@ -3,6 +3,7 @@
 import { getTs } from './typescript.mjs';
 import {actionBodyText, actionFunctionPrefix, guardedBodyOffset, projectGuardedBody} from './action-guards.mjs';
 import {actionGroupPolicies} from './action-groups.mjs';
+import {analyzeDurableMember, durableGroupNames, durableJournalPattern} from './durable-members.mjs';
 const ts = getTs();
 export function supportsDisabled(tag) {
   return ['button', 'submit', 'reset', 'input', 'textarea', 'checkbox', 'select', 'fieldset'].includes(tag);
@@ -60,12 +61,15 @@ function balanced(s, p, open, close, tolerant=false, guardRecovery=null) {
   throw diagnostic('ELN-PARSE-003',s,starts.at(-1)??p,'unterminated block');
 }
 // The owner list of an action group stays on its declaration line. Each owner
-// is an expression; a bare identifier keeps its name for binding checks.
+// is an expression; a bare identifier keeps its name for binding checks. An
+// option is a word or a double-quoted string, such as a durable journal name.
+const groupToken=String.raw`(?:"[^"\r\n]*"?|[^\s;/"])+`;
+const groupTail=new RegExp(String.raw`^[ \t]*([\w-]*)((?:[ \t]+${groupToken})*)[ \t]*(?:;|(?=\/\/|\r?\n|$))`,'d');
 function groupHeader(source, open) {
   const lineEnd=source.slice(open).search(/\r?\n|$/)+open;
   let parens;
   try { parens=balanced(source.slice(0,lineEnd),open,'(',')'); } catch { return null; }
-  const tail=/^[ \t]*([\w-]*)((?:[ \t]+[^\s;/]+)*)[ \t]*(?:;|(?=\/\/|\r?\n|$))/d.exec(source.slice(parens.end));
+  const tail=groupTail.exec(source.slice(parens.end));
   if(!tail)return null;
   const contents=parens.contents,leading=contents.length-contents.trimStart().length;
   const ownerSpan=contents.trim()?range(open+1+leading,contents.trim().length):range(open,parens.end-open);
@@ -79,7 +83,7 @@ function groupHeader(source, open) {
     return {expr:text,exprSpan:range(open+1+start,text.length),name:ts.isIdentifier(element)?element.text:null};
   }):null;
   const optionsStart=parens.end+tail.indices[2][0];
-  const options=[...tail[2].matchAll(/\S+/g)].map(token=>({text:token[0],span:range(optionsStart+token.index,token[0].length)}));
+  const options=[...tail[2].matchAll(new RegExp(groupToken,'g'))].map(token=>({text:token[0],span:range(optionsStart+token.index,token[0].length)}));
   return {owner:{owner:contents.trim(),ownerSpan,owners},policy:tail[1],policySpan:capture(tail,1,parens.end),
     options,end:parens.end+tail[0].length};
 }
@@ -112,6 +116,29 @@ function groupOptions(policy, tokens, groupError) {
     const milliseconds=parsed?Number(parsed[1])*(parsed[2]==='s'?1000:1):NaN;
     if(milliseconds<=3600000)result[name]=milliseconds;
     else invalid(result[`${name}Span`],`Write the ${name} as a duration from 1ms to 3600s, such as 500ms or 10s`);
+  }
+  return result;
+}
+// durable takes only its journal name, a double-quoted string that identifies
+// the stored intents, so it can be checked for uniqueness across the graph.
+function durableOptions(group, tokens, groupError) {
+  const result={capacity:null,timeout:null,debounce:null,journal:null,journalSpan:null};
+  const options=[...tokens];
+  const only='A durable group takes only a journal name, such as durable "task-edit"';
+  const isOption=token=>groupDurations.includes(token.text)||/^\d/.test(token.text);
+  if(!options.length||isOption(options[0])){
+    groupError('ELN-DURABLE-POLICY',options.length?options[0].span:group.policySpan,options.length?only
+      :'Write the journal name after durable, such as durable "task-edit"');
+    return result;
+  }
+  const token=options.shift();
+  result.journalSpan=token.span;
+  result.journal=durableJournalPattern.test(token.text)?token.text.slice(1,-1):token.text;
+  if(result.journal===token.text)groupError('ELN-DURABLE-NAME',token.span,
+    'Write the journal name as a double-quoted string of 1 to 80 letters, digits, dots, hyphens or underscores');
+  if(options.length){
+    const start=options[0].span.start,last=options.at(-1).span;
+    groupError('ELN-DURABLE-POLICY',range(start,last.start+last.length-start),only);
   }
   return result;
 }
@@ -371,8 +398,9 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       else if(!group.owners.length)groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
         `Name at least one owner for action group '${group.name}'`);
       if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
-        'Choose single-flight, latest, keep-latest or queue as the action group policy');
-      Object.assign(group,groupOptions(group.policy,header.options,groupError));
+        'Choose single-flight, latest, keep-latest, queue or durable as the action group policy');
+      Object.assign(group,group.policy==='durable'?durableOptions(group,header.options,groupError)
+        :groupOptions(group.policy,header.options,groupError));
       actionGroups.push(group);pos=header.end;continue;
     }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){
@@ -472,5 +500,10 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   }
   validate(ui);
   const headerStart=headerOffset+headerSource.length-headerSource.trimStart().length;
-  return {name,nameSpan:capture(m,1,0),params,states,calcs,actions,actionGroups,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
+  const ir={name,nameSpan:capture(m,1,0),params,states,calcs,actions,actionGroups,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
+  // The parser keeps the shape of each durable member; validation reports why
+  // a member has none.
+  const durable=durableGroupNames(ir);
+  for(const action of actions)if(durable.has(action.group))action.durable=analyzeDurableMember(action,ir).durable;
+  return ir;
 }

@@ -127,6 +127,11 @@ function groupOptions(group){
 function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){
   const diagnostics=validateComponent(ir);
   if(diagnostics.length)throw Object.assign(new Error(diagnostics.map(d=>`${d.code}: ${d.message}`).join('\n')),{diagnostics});
+  // Durable groups need their own emission; refuse them instead of emitting
+  // an ordinary group that would skip the journal.
+  const durableGroup=ir.actionGroups.find(group=>group.policy==='durable');
+  if(durableGroup)throw Object.assign(new Error(`ELN-DURABLE-UNSUPPORTED: Durable action groups cannot be compiled yet. Use another policy for action group '${durableGroup.name}'`),
+    {code:'ELN-DURABLE-UNSUPPORTED',file:ir.filename,...durableGroup.policySpan});
   const ordinaryPaths=runtimeModulePaths(projectSurface(ir.source,ir.filename));
   for(const imp of ir.imports.filter(imp=>!imp.path.endsWith('.eln')&&ordinaryPaths.has(imp.path))){
     if(!moduleImports.has(imp.path))throw Error('ELN-IMPORT-RUNTIME: Use emitGraph to package local ESM dependencies before generating runtime imports');

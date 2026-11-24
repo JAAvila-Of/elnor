@@ -530,10 +530,11 @@ journal.start();
   another epoch) and any other status code.
 - When the store cannot be read, for example an IndexedDB open that times
   out, the journal retries reconciliation with the same backoff, growing to
-  `maxMs`, and keeps retrying every `maxMs` until `stop()`. A read for a
-  watch that fails in a running journal is retried the same way, and the
-  retried read shows the records to the components, so a blocked record or an
-  outcome is not hidden by one failed read.
+  `retry.maxMs` (60 s by default), and keeps retrying every `retry.maxMs`
+  until `stop()`. A read for a watch that fails in a running journal is
+  retried the same way, and the retried read shows the records to the
+  components, so a blocked record or an outcome is not hidden by one failed
+  read.
 - `await journal.outcomes()` gives the outcomes that no member consumed, each
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,
@@ -588,5 +589,8 @@ minimal fake of it. The
 [acceptance in headless Edge](DURABLE-INTENTS-DESIGN.md#results) against the
 reference provider, including reloads, two tabs and an account change, passed
 all 24 checks in 5 consecutive runs on the final code, with no page errors.
-A forced kill of the browser or of the operating system with a pending intent
+Earlier runs on the same code with an intermediate harness had one job that
+timed out because of how the harness released a blocked IndexedDB open, and
+the check of a failed first read depends on how Edge queues opens behind a
+blocked upgrade. A forced kill of the browser or of the operating system with a pending intent
 was not tested.

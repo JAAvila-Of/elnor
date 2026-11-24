@@ -274,7 +274,8 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
 
   const hook = {
     // `members`, when given, is the set of member names the watching group
-    // declares; it may grow while the watch lasts.
+    // declares. The group declares every member while it renders, before it
+    // starts watching, so the set does not change during the watch.
     watch(journal, owner, listener, members) {
       const watcher = {journal, owner, listener, members, last: undefined};
       watchers.add(watcher);

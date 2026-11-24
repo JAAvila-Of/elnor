@@ -57,7 +57,7 @@ and a future server half speak. The client half is implemented: a
 [durable group](mvp/ASYNC-POLICY.md#durable-intents) stores each call in a
 journal, sends it until the provider decides and resumes the body with the
 outcome after a reload. [DurableSave](../examples/durable-save/README.md)
-rewrites the recovery example in 66 nonblank lines instead of 196. Node.js
+rewrites the recovery example in 67 nonblank lines instead of 196. Node.js
 tests cover it against a reference provider, and the
 [acceptance in headless Edge](mvp/DURABLE-INTENTS-DESIGN.md#results) passed
 all 24 checks in 5 consecutive runs on the final code. The server

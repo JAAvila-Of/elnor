@@ -343,9 +343,10 @@ The compiler recognizes durable operations by their type from that module.
   returns to that screen. It runs again when the browser reports a connection
   and with bounded backoff after a failure. If the store cannot be read, for
   example an IndexedDB open that times out, it retries reconciliation with the
-  same backoff, growing to `maxMs`, and keeps retrying every `maxMs` until
-  `stop()`. A read for a watch that fails in a running journal is retried
-  the same way, and the retried read shows the records to the components.
+  same backoff, growing to `retry.maxMs` (60 s by default), and keeps
+  retrying every `retry.maxMs` until `stop()`. A read for a watch that fails
+  in a running journal is retried the same way, and the retried read shows
+  the records to the components.
 - `await journal.outcomes()` gives the terminal records that no member has
   consumed, for example to show a notification, and each one has
   `acknowledge()`. A rejected write is therefore never dropped without being
@@ -514,7 +515,10 @@ outcome; an answer that arrives for a record another tab blocked by version; a
 started tab that adopts a pending intent a closed tab left, without an online
 event or a reload; and reconciliation after a failed first read, induced by
 holding an IndexedDB connection that blocks a version upgrade past the 10 s
-open bound.
+open bound. That check depends on how Edge queues opens behind a blocked
+upgrade. Earlier runs on the same code, with an intermediate version of the
+harness, had one job that timed out because of how the harness released the
+blocked open.
 
 Two tabs that each made 200 locked read-modify-writes of one counter reached
 400 of 400 in all 20 counts through IndexedDB. The localStorage contrast lost
@@ -525,10 +529,10 @@ described under Host.
 Admission latency was measured with 50 admissions per run and context, strict
 durability and the CPU limited to 10%. With the profile on an NVMe SSD the
 median was between 1.4 and 1.6 ms, the p95 between 1.7 and 17.3 ms and the
-maximum 859 ms. In a private (in-memory) profile the median was between 0.8
-and 1.0 ms. An earlier round, with the profile on a shared SATA hard disk,
-gave a median of 50.6 to 65.5 ms and a p95 of 98.7 to 210.4 ms, so disk
-speed dominates these figures.
+maximum 859 ms. In a private profile, which is likely in memory, the median
+was between 0.8 and 1.0 ms. An earlier round, with the profile on a shared
+SATA hard disk, gave a median of 50.6 to 65.5 ms and a p95 of 98.7 to
+210.4 ms, so these figures depend on disk speed and contention.
 
 A forced kill of the browser or of the operating system with a pending intent
 has not been tested.

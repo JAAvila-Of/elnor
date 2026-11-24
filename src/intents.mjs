@@ -156,7 +156,17 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
         }
         const next = await exclusive(async () => {
           const state = await read(), current = find(state, key, 'pending');
-          if (!current) return 'done';
+          if (!current) {
+            // A newer release in another tab blocked the record while this
+            // request was out. The provider has decided it, so its outcome
+            // stands; any other answer leaves the record blocked.
+            const outdated = find(state, key, 'blocked');
+            if (outdated?.reason !== 'version' || outdated.epoch !== record.epoch) return 'done';
+            const {reason, ...rest} = outdated;
+            const {record: updated, epoch} = applyAnswer({...rest, state: 'pending'}, answer, state.epoch);
+            if (updated.state === 'terminal') await write({...state, epoch, records: state.records.map(item => item === outdated ? updated : item)});
+            return 'done';
+          }
           // Another tab stamped the record while this request was out.
           if (current.epoch !== record.epoch) return 'send';
           const {record: updated, epoch, next} = applyAnswer(current, answer, state.epoch);

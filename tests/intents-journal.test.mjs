@@ -570,6 +570,46 @@ test('an older operation version blocks, while a newer version or an unknown ope
   newer.stop();
 });
 
+test('a decided answer makes a record terminal even if a newer release blocked it meanwhile', async () => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]), locks = serialLocks();
+  const held = Promise.withResolvers();
+  const older = setup({storage: memoryIntentStore(values), locks, answers: [() => held.promise]});
+  assert.equal(await older.hook.admit(entry()), 'k1');
+  await until(() => older.transport.requests.length === 1, 'the request of the older release');
+  // A tab of the newer release starts while the request is out and blocks the record.
+  const newer = setup({storage: memoryIntentStore(values), locks, version: 2});
+  await until(() => stored(older.storage).records[0].state === 'blocked', 'the version block');
+  assert.equal(stored(older.storage).records[0].reason, 'version');
+  held.resolve(applied('E1', {revision: 5}));
+  await until(() => stored(older.storage).records[0].state !== 'blocked', 'the decided outcome');
+  const [item] = stored(older.storage).records;
+  assert.equal(item.state, 'terminal');
+  assert.equal(item.reason, undefined);
+  assert.deepEqual(item.outcome, {status: 'applied', result: {revision: 5}});
+  assert.deepEqual((await newer.journal.blocked()), []);
+  assert.deepEqual((await newer.journal.outcomes()).map(outcome => outcome.outcome), [{status: 'applied', result: {revision: 5}, late: true}]);
+  assert.equal(newer.transport.requests.length, 0);
+  older.journal.stop();
+  newer.journal.stop();
+});
+
+test('an answer that decides nothing leaves a record blocked by a newer release blocked', async () => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]), locks = serialLocks();
+  const answers = [Promise.withResolvers(), Promise.withResolvers()];
+  const older = setup({storage: memoryIntentStore(values), locks, answers: answers.map(answer => () => answer.promise)});
+  await older.hook.admit(entry());
+  await older.hook.admit(entry({owner: '"t2"'}));
+  await until(() => older.transport.requests.length === 2, 'both requests');
+  const newer = setup({storage: memoryIntentStore(values), locks, version: 2});
+  await until(() => stored(older.storage).records.every(item => item.state === 'blocked'), 'the version blocks');
+  answers[0].resolve({kind: 'retry'});
+  answers[1].resolve(applied('E2'));
+  await settle();
+  assert.deepEqual(stored(older.storage).records.map(item => [item.key, item.state, item.reason]), [['k1', 'blocked', 'version'], ['k2', 'blocked', 'version']]);
+  older.journal.stop();
+  newer.journal.stop();
+});
+
 test('forget removes every record of the scope and other tabs see it', async () => {
   const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: [
     record({key: 'p'}), record({key: 't', owner: '"t2"', state: 'terminal', outcome: {status: 'applied', result: 1}}),

@@ -331,7 +331,8 @@ The compiler recognizes durable operations by their type from that module.
   and with bounded backoff after a failure. If the store cannot be read, for
   example an IndexedDB open that times out, it retries reconciliation with the
   same backoff, growing to `maxMs`, and keeps retrying every `maxMs` until
-  `stop()`.
+  `stop()`. A read for a watch that fails in a running journal is retried
+  the same way, and the retried read shows the records to the components.
 - `await journal.outcomes()` gives the terminal records that no member has
   consumed, for example to show a notification, and each one has
   `acknowledge()`. A rejected write is therefore never dropped without being

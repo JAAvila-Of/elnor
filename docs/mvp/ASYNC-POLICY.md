@@ -525,7 +525,10 @@ journal.start();
   another epoch) and any other status code.
 - When the store cannot be read, for example an IndexedDB open that times
   out, the journal retries reconciliation with the same backoff, growing to
-  `maxMs`, and keeps retrying every `maxMs` until `stop()`.
+  `maxMs`, and keeps retrying every `maxMs` until `stop()`. A read for a
+  watch that fails in a running journal is retried the same way, and the
+  retried read shows the records to the components, so a blocked record or an
+  outcome is not hidden by one failed read.
 - `await journal.outcomes()` gives the outcomes that no member consumed, each
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,

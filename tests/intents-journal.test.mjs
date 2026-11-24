@@ -520,6 +520,56 @@ test('a reconciliation whose read fails is retried with the backoff while the jo
   journal.stop();
 });
 
+test('a watcher whose read failed sees the record once a retried reconciliation reads it', async t => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+  const failing = (storage, count) => {
+    const read = storage.read;
+    storage.failures = count;
+    storage.read = async key => {
+      if (storage.failures > 0) {
+        storage.failures--;
+        throw new DOMException('Opening the intent database took too long', 'TimeoutError');
+      }
+      return read(key);
+    };
+    return storage;
+  };
+  const outcome = {status: 'applied', result: {revision: 2}};
+  for (const item of [record({state: 'blocked', reason: 'mismatch'}), record({state: 'terminal', outcome})]) {
+    // The watch's first read and the first reconciliation both fail.
+    const storage = failing(seeded([item]), 2);
+    const {hook, journal} = setup({storage, retry: {firstMs: 1000, maxMs: 60000}, start: false});
+    const views = [];
+    hook.watch('task-edit', '"t1"', view => views.push(view?.state ?? null));
+    journal.start();
+    await settle();
+    assert.equal(storage.failures, 0);
+    assert.deepEqual(views, []);
+    t.mock.timers.tick(1000);
+    await settle();
+    assert.deepEqual(views, [item.state], `the ${item.state} record is shown`);
+    journal.stop();
+  }
+
+  // A read for a change from another tab that fails is retried the same way.
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
+  const storage = failing(memoryIntentStore(values), 0);
+  const {hook, journal} = setup({storage, retry: {firstMs: 1000, maxMs: 60000}});
+  const views = [];
+  hook.watch('task-edit', '"t1"', view => views.push(view?.state ?? null));
+  await settle();
+  assert.deepEqual(views, [null]);
+  storage.failures = 1;
+  await memoryIntentStore(values).write(storageKey, JSON.stringify({format: 1, epoch: 'E1', records: [record({state: 'blocked', reason: 'mismatch'})]}));
+  await settle();
+  assert.equal(storage.failures, 0);
+  assert.deepEqual(views, [null]);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.deepEqual(views, [null, 'blocked']);
+  journal.stop();
+});
+
 test('watch reports the record of one owner as it changes', async () => {
   const {storage, hook, journal} = setup({storage: seeded([]), answers: [applied('E1')], start: false});
   const views = [];
@@ -574,16 +624,18 @@ test("another store's committed write notifies a started journal", async () => {
   await settle();
   assert.deepEqual(views, [null], 'a journal that has not started does not follow other tabs');
   observer.journal.start();
+  await settle();
+  assert.deepEqual(views, [null, 'blocked'], 'the reconciliation at start shows what was missed');
   await tab.write('elnor-intents:bob', journalOf(record({scope: 'bob'})));
   await settle();
-  assert.deepEqual(views, [null]);
+  assert.deepEqual(views, [null, 'blocked']);
   await tab.write(storageKey, journalOf(record({state: 'terminal', outcome: {status: 'applied', result: {revision: 2}}})));
   await settle();
-  assert.deepEqual(views, [null, 'terminal']);
+  assert.deepEqual(views, [null, 'blocked', 'terminal']);
   observer.journal.stop();
   await tab.remove(storageKey);
   await settle();
-  assert.deepEqual(views, [null, 'terminal'], 'a stopped journal does not follow other tabs');
+  assert.deepEqual(views, [null, 'blocked', 'terminal'], 'a stopped journal does not follow other tabs');
 });
 
 test('a started journal sends a pending intent that another tab admitted and left', async t => {

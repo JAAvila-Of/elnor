@@ -98,10 +98,15 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     for (const watcher of watchers) show(watcher, state);
   };
   // A read that fails shows nothing: it does not mean that no record exists.
+  // A running journal reads again with the reconciliation's backoff, and the
+  // reconciliation's read shows the records to the watchers.
   const refresh = async () => {
     const ticket = ++issued;
     let state;
-    try { state = await read(); } catch { return; }
+    try { state = await read(); } catch {
+      if (running && reconcileTimer === undefined) retryReconcile(reconcileAttempt + 1);
+      return;
+    }
     notify(state, ticket);
     adopt(state);
   };
@@ -215,8 +220,12 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     let keys;
     try {
       keys = await exclusive(async () => {
-        const state = await read();
-        if (state.unreadable !== null) return [];
+        // Under the lock no write comes between this ticket and the read.
+        const ticket = ++issued, state = await read();
+        if (state.unreadable !== null) {
+          notify(state, ticket);
+          return [];
+        }
         let changed = false;
         const records = state.records.map(item => {
           if (!valid(item) || item.state !== 'pending') return item;
@@ -225,21 +234,26 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
           changed = true;
           return block(item, 'version');
         });
+        // The write or, without one, this read shows the records to the
+        // watchers, including those whose own read failed.
         if (changed) await write({...state, records});
+        else notify(state, ticket);
         return records.filter(item => valid(item) && item.state === 'pending' && sendable(item)).map(item => item.key);
       });
     } catch {
       // Storage failed, for example an IndexedDB open that timed out at
       // start; without a retry the stored intents would wait for a
       // connection event or a reload.
-      if (running) {
-        clearTimeout(reconcileTimer);
-        reconcileTimer = setTimeout(reconcile, backoff(++reconcileAttempt));
-      }
+      if (running) retryReconcile(++reconcileAttempt);
       return;
     }
     reconcileAttempt = 0;
     for (const key of keys) drive(key);
+  }
+  // Only a reconciliation that fails makes the next wait longer.
+  function retryReconcile(attempt) {
+    clearTimeout(reconcileTimer);
+    reconcileTimer = setTimeout(reconcile, backoff(attempt));
   }
 
   const online = () => {

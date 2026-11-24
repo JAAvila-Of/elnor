@@ -248,8 +248,8 @@ A record stores a format version, the journal name, the scope, the owner, the
 member name, the operation name and version, the key, the epoch, the input
 and, once known, the outcome. The journal name, member names and operation
 names are persisted identities: renaming one leaves existing records without
-a consumer, and the host sees them through `journal.outcomes()` and
-`journal.blocked()`. The host declares an operation version; a record whose
+a consumer, and the host sees them through `await journal.outcomes()` and
+`await journal.blocked()`. The host declares an operation version; a record whose
 operation is unknown or whose version differs is blocked, never sent with a
 different input shape.
 
@@ -273,7 +273,10 @@ The compiler recognizes durable operations by their type from that module.
 
 - The journal keeps the records of a scope in IndexedDB. A write completes
   its transaction before the scope's Web Lock is released, so the next tab to
-  take the lock reads it. Other tabs hear of each change through a
+  take the lock reads it. Writes ask for strict durability, so a write is
+  flushed to disk before it completes and an intent stored before it was sent
+  survives a crash of the system; a browser without that option uses its
+  default. Other tabs hear of each change through a
   `BroadcastChannel` and update what their components show. localStorage was
   rejected because it is not coherent across tabs: in headless Edge, two tabs
   of one profile each made 200 increments of one localStorage value, every one
@@ -292,11 +295,11 @@ The compiler recognizes durable operations by their type from that module.
   component for it is mounted, so a write is completed even if the person never
   returns to that screen. It runs again when the browser reports a connection
   and with bounded backoff after a failure.
-- `journal.outcomes()` resolves to the terminal records that no member has
+- `await journal.outcomes()` gives the terminal records that no member has
   consumed, for example to show a notification, and each one has
   `acknowledge()`. A rejected write is therefore never dropped without being
   visible.
-- `journal.blocked()` resolves to the blocked records with the reason,
+- `await journal.blocked()` gives the blocked records with the reason,
   `export()` for their stored text and `discard()`. Discarding is the only way
   to remove a blocked record, and until then its owner admits no new intent.
 - Admission takes a Web Lock per record, so two tabs cannot admit two intents
@@ -349,7 +352,7 @@ with:
 
 A provider whose history was reset before it ever saw an intent stamped with
 the old epoch also blocks that intent. That is rare and safe, and the host
-resolves it through `journal.blocked()`.
+resolves it through `await journal.blocked()`.
 
 Responses carry `{"status": "applied", "result": ...}`,
 `{"status": "rejected", "reason": ...}` or `{"status": "unavailable"}`, with

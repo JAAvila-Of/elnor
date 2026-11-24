@@ -492,8 +492,8 @@ journal.start();
   session ends or changes, and create another journal for the next account.
   When the provider answers that the scope does not belong to the session, the
   intent stays pending, the journal stops sending and `onPaused` reports it.
-- `journal.outcomes()` resolves to the outcomes that no member consumed, each
-  with `acknowledge()`. `journal.blocked()` resolves to the blocked records,
+- `await journal.outcomes()` gives the outcomes that no member consumed, each
+  with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,
   its owner admits no new intent.
 - The operation's name and version are stored with the intent. A record whose
@@ -526,8 +526,8 @@ component with an action group.
 
 DurableSave and its host take 66 nonblank lines, against 196 for the
 handwritten view and client, below the limit of 98 that the design set. Its
-delivery, with `intents.mjs` (23764 bytes) and `durable-runtime.mjs` (7394
-bytes) counted, is 37400 JS bytes and 11547 gzip-9 bytes, summed over the
+delivery, with `intents.mjs` (24031 bytes) and `durable-runtime.mjs` (7394
+bytes) counted, is 37667 JS bytes and 11652 gzip-9 bytes, summed over the
 files. The handwritten version measured the same way on the same branch is
 15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
 reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude

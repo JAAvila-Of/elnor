@@ -49,6 +49,8 @@ account. An application with several notes would use the note's id.
 ```ts
 const {journal, notes} = createNotes({account, baseUrl});
 mount(root, {notes});
+const unconsumed = await journal.outcomes();
+const blocked = await journal.blocked();
 ```
 
 `createNotes` starts the journal, which keeps its records in IndexedDB so that
@@ -56,7 +58,7 @@ every tab of the browser profile sees one journal; the tests pass an in-memory
 `store` instead. Call `journal.stop()` before the session ends or changes, and
 create another journal for the next account. The `X-Fixture-Account` header
 stands in for the session in this fixture. `journal.outcomes()` and
-`journal.blocked()` resolve to what no view consumed or what cannot be sent;
+`journal.blocked()` resolve to what no view consumed and what cannot be sent;
 the host decides what to show for them.
 
 ## Running it
@@ -105,11 +107,11 @@ Acceptance in a browser, including two tabs, has not run yet.
 | | RecoverableSave | DurableSave |
 | --- | --- | --- |
 | Nonblank lines of view and client or host | 60 + 136 = 196 | 45 + 21 = 66 |
-| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 37400, 11547 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 37667, 11652 |
 
 The byte counts were measured on this branch with the same method for both:
 the compiled view module and entry, plus the client or host transpiled by
-TypeScript. DurableSave also counts `intents.mjs` (23764 bytes, 7146 gzip-9)
+TypeScript. DurableSave also counts `intents.mjs` (24031 bytes, 7251 gzip-9)
 and `durable-runtime.mjs` (7394 bytes, 2608 gzip-9), which every durable
 component of an application shares. `runtime.mjs` is left out of both. The
 [recovery journal](../../docs/mvp/RECOVERY-JOURNAL.md) reported 11039 JS bytes

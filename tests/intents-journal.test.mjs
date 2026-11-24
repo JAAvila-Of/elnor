@@ -592,10 +592,10 @@ test('indexedDbIntentStore throws without IndexedDB', () => {
 // A minimal IDBFactory: requests and transactions finish on a later turn, and
 // a transaction's changes are applied just before its complete event.
 function fakeIndexedDB() {
-  const databases = new Map(), opened = [], completed = [];
+  const databases = new Map(), opened = [], completed = [], requested = [];
   const later = callback => setImmediate(callback);
   const factory = {
-    opened, completed,
+    opened, completed, requested,
     // When set, the next transaction aborts with this error and changes nothing.
     abortNext: null,
     contents: (name, store) => [...databases.get(name).stores.get(store)],
@@ -608,7 +608,8 @@ function fakeIndexedDB() {
         const database = databases.get(name);
         request.result = {
           createObjectStore(store) { database.stores.set(store, new Map()); },
-          transaction(store, mode) {
+          transaction(store, mode, options) {
+            requested.push([mode, options?.durability]);
             const data = database.stores.get(store), steps = [], transaction = {error: null};
             const queue = step => { const result = {}; steps.push(() => { result.result = step(); }); return result; };
             transaction.objectStore = () => ({
@@ -666,6 +667,8 @@ test('the IndexedDB store commits before it resolves and tells the other tabs', 
   await until(() => heard.length === 2, 'the notice of the removal');
   assert.deepEqual(heard, [storageKey, storageKey]);
   assert.deepEqual(factory.completed, ['readonly', 'readwrite', 'readonly', 'readwrite', 'readonly']);
+  // Writes and removals are flushed to disk before they complete.
+  assert.deepEqual(factory.requested, [['readonly', undefined], ['readwrite', 'strict'], ['readonly', undefined], ['readwrite', 'strict'], ['readonly', undefined]]);
   factory.abortNext = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
   await assert.rejects(one.write(storageKey, 'lost'), {name: 'QuotaExceededError'});
   assert.deepEqual(factory.contents('elnor-intents', 'journals'), []);

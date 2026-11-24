@@ -327,7 +327,10 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
   const run = async (mode, operate) => {
     const database = await open();
     return new Promise((resolve, reject) => {
-      const transaction = database.transaction(objectStore, mode);
+      // A write is flushed to disk before it completes, because the journal
+      // sends an intent only after storing it: an intent the provider applied
+      // must not be lost to a crash of the system.
+      const transaction = database.transaction(objectStore, mode, mode === 'readwrite' ? {durability: 'strict'} : undefined);
       const request = operate(transaction.objectStore(objectStore));
       transaction.oncomplete = () => resolve(request.result);
       transaction.onabort = () => reject(transaction.error ?? new DOMException('The intent store transaction was aborted', 'AbortError'));

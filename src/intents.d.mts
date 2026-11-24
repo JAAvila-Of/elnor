@@ -118,7 +118,9 @@ export interface IntentJournal {
   start(): void;
   /** Aborts the requests in flight and sends nothing more until `start`. */
   stop(): void;
+  /** Resolves to the terminal records that no member consumed: `await journal.outcomes()`. */
   outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
+  /** Resolves to the records that cannot be sent: `await journal.blocked()`. */
   blocked(): Promise<ReadonlyArray<BlockedRecord>>;
   /** Called when the provider refuses the scope for the current session; the journal sends nothing until `start`. */
   onPaused(listener: (reason: 'scope-refused') => void): () => void;

@@ -2,7 +2,8 @@
 import {parseSurface} from './parser.mjs';
 import {recoverDomPrefix} from './dom-editor.mjs';
 import {guardCallChecks, missingGuardClose} from './action-guards.mjs';
-import {actionGroupType, managedActionNames, managedActionType, memberGroupType} from './action-groups.mjs';
+import {actionGroupType, durableActionType, managedActionNames, managedActionType, memberGroupType} from './action-groups.mjs';
+import {durableHelperNames, durableHelpers, durableMemberTypes, memberBodyPieces} from './durable-checks.mjs';
 
 export class SourceMap {
   constructor(source) {
@@ -97,6 +98,12 @@ export function projectSurface(source, filename) {
   // Generated offsets of each action's name and function, and of the disposal
   // expression, for the unowned work warning.
   const actionOffsets = [];
+  // Durable members and owners, for the durable type errors. The generated
+  // type of a durable member names its callee again, so TypeScript errors in
+  // it repeat an error of the mapped call and are not reported.
+  const durable = {members: [], owners: [], skipped: [], toOriginal: (start, length) => map.toOriginal(start, length)};
+  const generatedTypeRanges = [];
+  const durableNames = durableHelperNames(ir);
   let disposalOffset = -1;
   if (ir.header) {
     let cursor = ir.headerSpan.start;
@@ -109,6 +116,7 @@ export function projectSurface(source, filename) {
     c({start: cursor, length: ir.headerSpan.start + ir.headerSpan.length - cursor});
     g('\n');
   }
+  if (durableNames) g(durableHelpers(durableNames) + '\n');
   g('function __validate(');
   ir.params.forEach((p, index) => { if (index) g(', '); bindingOffsets.push(map.source.length); c(p.rawSpan); });
   g(') {\n');
@@ -134,10 +142,11 @@ export function projectSurface(source, filename) {
         for (const owner of group.owners) {
           if (owner.name !== null && !owners.has(owner.name)) continue;
           g('void (');
-          // Direct state owners compare revisions, so their type is not checked.
-          if (!ir.states.some(state => state.name === owner.name)) {
-            ownerChecks.push({offset: map.source.length, length: owner.exprSpan.length, span: owner.exprSpan, expr: owner.expr});
-          }
+          // The journal stores a durable owner, so its type is always checked.
+          // Other direct state owners compare revisions and are not checked.
+          const check = {offset: map.source.length, length: owner.exprSpan.length, span: owner.exprSpan, expr: owner.expr};
+          if (group.policy === 'durable') durable.owners.push(check);
+          else if (!ir.states.some(state => state.name === owner.name)) ownerChecks.push(check);
           c(owner.exprSpan); g(');\n');
         }
       } else if (group.owner) { g('void ['); c(group.ownerSpan); g('];\n'); }
@@ -156,8 +165,14 @@ export function projectSurface(source, filename) {
     const implementation = managed.get(action.name);
     const offsets = {name: -1, body: -1};
     actionOffsets.push(offsets);
+    const pieces = memberBodyPieces(action, source, durableNames);
+    const member = pieces.some(piece => piece.durableCall);
     if (implementation) {
-      g('const '); offsets.name = map.source.length; c(action.nameSpan); g(` = {} as ${managedActionType(implementation)};\n`);
+      g('const '); offsets.name = map.source.length; c(action.nameSpan); g(' = {} as ');
+      const typeStart = map.source.length;
+      g(member ? durableActionType(implementation, durableMemberTypes(durableNames, action)) : managedActionType(implementation));
+      if (member) generatedTypeRanges.push({start: typeStart, end: map.source.length});
+      g(';\n');
     }
     // A member sees its own group with the signal of its invocation.
     const shadowed = implementation && groups.has(action.group);
@@ -167,13 +182,18 @@ export function projectSurface(source, filename) {
     g(action.async ? 'async function ' : 'function ');
     if (implementation) g(implementation); else { offsets.name = map.source.length; c(action.nameSpan); }
     g('('); c(action.paramsSpan); g(') {');
-    if(action.bodySegments){
-      guardChecks.push(...guardCallChecks(action,map.source.length));
-      for(const {span,text,recoveryTail} of action.bodySegments){
-        if(recoveryTail)recoveryTails.push({start:map.source.length,end:map.source.length+text.length});
-        if(span)c(span);else g(text);
-      }
-    }else c(action.bodySpan);
+    const record = member ? {group: action.group, callee: action.durable.callee, root: action.durable.callee.split('.')[0].trim(),
+      functionOffset: offsets.body, callOffset: -1} : null;
+    if(action.bodySegments)guardChecks.push(...guardCallChecks({bodySegments:pieces},map.source.length));
+    for(const {span,text,recoveryTail,durableCall} of pieces){
+      if(recoveryTail)recoveryTails.push({start:map.source.length,end:map.source.length+text.length});
+      if(span)c(span);else g(text);
+      if(durableCall)record.callOffset=map.source.length;
+    }
+    if (record) durable.members.push(record);
+    // A member whose shape is invalid already has a Surface error; its calls
+    // are not reported again.
+    else if (action.durable !== undefined) durable.skipped.push({start: offsets.body, end: map.source.length});
     g(shadowed ? '}; })();\n' : '}\n');
   }
   if(ir.disposal){g('(() => { ((__elnor_result: void) => {})(');disposalOffset=map.source.length;c(ir.disposal.exprSpan);g('); });\n');}
@@ -239,5 +259,5 @@ export function projectSurface(source, filename) {
   g('}, __slots?: {');
   for (const slot of ir.slots) g(`${slot}?: () => void;`);
   g('}): void {}\n');
-  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks, actionOffsets, disposalOffset};
+  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks, actionOffsets, disposalOffset, durable, generatedTypeRanges};
 }

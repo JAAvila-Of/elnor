@@ -30,6 +30,21 @@ export function managedActionType(implementation) {
   )`;
 }
 
+// A durable member has no error status: a transport failure does not end an
+// intent. `types` names the operation's input, result and reason.
+export function durableActionType(implementation, types) {
+  const value = `Awaited<ReturnType<typeof ${implementation}>>`;
+  const none = 'readonly result?: undefined; readonly reason?: undefined';
+  return `((...args: Parameters<typeof ${implementation}>) => Promise<${value} | undefined>) & (
+    | {readonly status: 'idle'; readonly pending: false; ${none}}
+    | {readonly status: 'pending'; readonly pending: true; ${none}}
+    | {readonly status: 'success'; readonly pending: false; readonly result: ${types}['result']; readonly reason?: undefined}
+    | {readonly status: 'rejected'; readonly pending: false; readonly result?: undefined; readonly reason: ${types}['reason']}
+    | {readonly status: 'unconfirmed'; readonly pending: false; ${none}}
+    | {readonly status: 'blocked'; readonly pending: false; ${none}}
+  )`;
+}
+
 // Owners other than direct state are compared with Object.is. An object owner
 // retires the running action when an equal object replaces it, so the editor
 // suggests a primitive key. The warning does not block builds.

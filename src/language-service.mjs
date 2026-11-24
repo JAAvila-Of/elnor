@@ -9,6 +9,7 @@ import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
 import {actionGroupPolicies, ownerIdentityWarnings, staleWriteWarnings} from './action-groups.mjs';
 import {unownedWorkWarnings} from './unowned-work.mjs';
+import {durableTypeErrors} from './durable-checks.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
 
 const ts = getTs();
@@ -130,6 +131,10 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
         errors.push({...error,file:doc.file,...position(doc.source,error.start)});
       }
     }
+    for(const error of durableTypeErrors(ts,ls.getProgram(),virtualName(doc),doc.projection)){
+      const span=error.generated===undefined?{start:error.start,length:error.length}:doc.projection.ir.nameSpan;
+      errors.push({code:error.code,message:error.message,file:doc.file,...span,...position(doc.source,span.start),...(error.generated===undefined?{}:{approximate:true})});
+    }
     for(const warning of ownerIdentityWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection.ownerChecks)){
       errors.push({...warning,file:doc.file,...position(doc.source,warning.start)});
     }
@@ -139,6 +144,7 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
     }
     for (const d of [...ls.getSyntacticDiagnostics(virtualName(doc)), ...ls.getSemanticDiagnostics(virtualName(doc))]) {
       if(doc.projection.recoveryTails?.some(tail=>d.start>=tail.start&&d.start<tail.end))continue;
+      if(doc.projection.generatedTypeRanges?.some(range=>d.start>=range.start&&d.start<range.end))continue;
       const exact = originalLocation(virtualName(doc), {start: d.start ?? 0, length: d.length ?? 0});
       // Never report a virtual offset as a source offset. Unmapped errors are
       // explicitly anchored to the component, with their provenance retained.

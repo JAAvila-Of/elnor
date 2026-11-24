@@ -59,5 +59,20 @@ clear at 1.095. The second does not: localized-wide has 2 of 5 phases within
 the margin, with mount at 1.156. Neither phase runs code this change touches. A
 follow-up alternated the localized-wide fixtures of the previous and current
 cohorts in one browser for 84 samples per variant and found −0.9% for mount,
-−1.4% for local-update and −3.2% for scatter-update. Two further cohorts of the
-committed source are needed before claiming parity for it.
+−1.4% for local-update and −3.2% for scatter-update.
+
+Two further cohorts of the committed source both pass the majority rule, with
+46 and 47 of 49 phases within the margin.
+
+| Scenario or phase | Cohort 3 ratio | Cohort 4 ratio |
+| --- | ---: | ---: |
+| keyed1000 aggregate | 0.983 | 0.965 |
+| keyed1000 / clear | 1.107 | 1.112 |
+| form-wide / edit-one | 1.117 | 1.101 |
+| localized-wide / mount | 1.103 | within |
+
+Clearing 1,000 rows moved from 1.23–1.29 to about 1.10, at the edge of the
+margin. Form-wide edit-one is outside the margin in both confirmation cohorts,
+but all four cohorts ran byte-identical sources, and it was at 0.975 and 0.992
+in the first two. Its Elnor time rose from 1.81 ms to 2.32 ms across sessions
+with the same code, so this is session variation, not a change in Elnor.

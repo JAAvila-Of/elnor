@@ -32,6 +32,9 @@ That fixed Svelte runtime majority target now has two same-source cohorts and
 a [validated public core integration](docs/mvp/CORE-REGION-INTEGRATION.md).
 Persistent phase exceptions remain explicit; this does not close the broader
 React, representative-app, startup, memory or production-readiness targets.
+The general renderer is now the default; it passed the same matrix in two
+cohorts before the switch, as recorded in
+[General renderer as the default](docs/mvp/GENERAL-RENDERER-DEFAULT.md).
 
 The current phase uses that core as a regression baseline and prioritizes
 Surface and application DX. The [Task desk pilot](docs/mvp/TASK-DESK-PILOT.md)

@@ -45,7 +45,7 @@ function inspectOutput(output,entryKey){
   return {owner,snapshot};
 }
 
-export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency,captureProps=false,hot=false,regionBackend=true}={}){
+export function buildSurfaceProject(entry,{outputDir,checkOutputDir,onDependency,captureProps=false,hot=false,regionBackend=false}={}){
   if(typeof outputDir!=='string'||!outputDir||typeof checkOutputDir!=='string'||!checkOutputDir)
     throw Error('Explicit project output and generated check directories are required');
   const output=path.resolve(outputDir),cache=path.resolve(checkOutputDir);

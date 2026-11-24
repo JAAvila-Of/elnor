@@ -3,7 +3,7 @@ import {emitGraph} from '../src/compiler.mjs';import {parseSurface} from '../src
 test('generic dynamic task identity owns tracking and scheduling for only one group activation',async t=>{
  setupDOM();const dir=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-generic-ticket-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const source='component App() {\n state shown=true;\n state value=1;\n action hide(){shown=false;}\n action show(){shown=true;}\n ui {\n section {\n if shown {\n strong globalThis.__genericTicketRead(value)\n }\n button "Hide" => hide()\n button "Show" => show()\n }\n }\n}',file=path.join(dir,'App.eln'),out=path.join(dir,'out');
- const built=emitGraph(new Map([[file,parseSurface(source,file)]]),out),runtime=await import(pathToFileURL(path.join(out,'runtime.mjs'))),external=runtime.cell('A');
+ const built=emitGraph(new Map([[file,parseSurface(source,file)]]),out,{regionBackend:true}),runtime=await import(pathToFileURL(path.join(out,'runtime.mjs'))),external=runtime.cell('A');
  const probe=runtime.createRegionTaskTicket({disposed:false},0,0,()=>{}),prototype=Object.getPrototypeOf(probe),track=prototype.track,run=prototype.run;probe.dispose();
  let active=null,stop;const reads=[],runs=[];prototype.track=function(fn){const previous=active;active=this;try{return track.call(this,fn);}finally{active=previous;}};prototype.run=function(){runs.push(this);return run.call(this);};
  globalThis.__genericTicketRead=value=>{reads.push(active);return external.value+value;};

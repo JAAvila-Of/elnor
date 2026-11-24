@@ -74,7 +74,7 @@ test('native owned construction accepts eligible dynamic class tasks',async t=>{
  const dir=fixture(t),childFile=path.join(dir,'Child.eln'),parentFile=path.join(dir,'Parent.eln');
  const child=parseSurface('component Child(tone: string) {\n ui {\n section class=(tone) {\n p class=(tone) "Child"\n }\n }\n}',childFile);
  const parent=parseSurface('import Child from "./Child.eln";\ncomponent Parent(initialTone: string) {\n state tone = initialTone;\n action toggle() { tone = "active"; }\n ui {\n section {\n button "Toggle" => toggle()\n Child tone=(tone)\n }\n }\n}',parentFile);
- const graph=new Map([[parentFile,parent],[childFile,child]]),result=emitGraph(graph,path.join(dir,'out'));
+ const graph=new Map([[parentFile,parent],[childFile,child]]),result=emitGraph(graph,path.join(dir,'out'),{regionBackend:true});
  const sources=fs.readdirSync(path.join(dir,'out')).filter(n=>n.endsWith('.mjs')).map(n=>fs.readFileSync(path.join(dir,'out',n),'utf8'));
  assert.ok(sources.some(s=>s.includes('renderNativeRegionOwned')),'Expected specialized native owned builder for dynamic classes');
  setupDOM();const {mount}=await import(pathToFileURL(path.join(dir,'out/Parent.mjs'))),root=new FakeNode('root'),stop=mount(root,{initialTone:'idle'});t.after(stop);

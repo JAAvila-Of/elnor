@@ -161,11 +161,9 @@ test('13: keyed list reuses DOM nodes on reorder, updating their text',async()=>
 test('14: standalone build includes only the target dependency graph',()=>{
   const output=build('ConfirmDialog');
   assert.equal(output.graph.size,1);
-  assert.deepEqual(fs.readdirSync(DIST).filter(n=>n.endsWith('.mjs')).sort(),['ConfirmDialog.mjs','entry.mjs','preview-fixtures.mjs','region-runtime.mjs','runtime.mjs']);
-  const regionalRuntime=fs.readFileSync(path.join(DIST,'region-runtime.mjs'));
-  assert.equal(output.regionRuntime.sha256,createHash('sha256').update(regionalRuntime).digest('hex'));
-  assert.equal(output.regionRuntime.features.lists,false);
-  assert.equal(output.regionRuntime.features.components,false);
+  // The general renderer is the default, so no region runtime is emitted.
+  assert.deepEqual(fs.readdirSync(DIST).filter(n=>n.endsWith('.mjs')).sort(),['ConfirmDialog.mjs','entry.mjs','preview-fixtures.mjs','runtime.mjs']);
+  assert.equal(output.regionRuntime,undefined);
   const manifest=JSON.parse(fs.readFileSync(path.join(DIST,'manifest.json')));
   assert.equal(manifest.components.length,1);
   assert.equal(manifest.entrySource,'ConfirmDialog.eln');
@@ -202,11 +200,12 @@ test('16: real HTTP preview serves a restrictive CSP and external modules',async
     const script=await fetch(`http://127.0.0.1:${port}/UserEditor.mjs`);
     assert.equal(script.status,200);
     assert.match(script.headers.get('content-type'),/text\/javascript/);
-    const regional=await fetch(`http://127.0.0.1:${port}/region-runtime.mjs`);
-    assert.equal(regional.status,200);
-    assert.match(regional.headers.get('content-type'),/text\/javascript/);
-    assert.equal(regional.headers.get('content-security-policy'),policy);
-    assert.match(await regional.text(),/export function mountRegion\b/);
+    const runtime=await fetch(`http://127.0.0.1:${port}/runtime.mjs`);
+    assert.equal(runtime.status,200);
+    assert.match(runtime.headers.get('content-type'),/text\/javascript/);
+    assert.equal(runtime.headers.get('content-security-policy'),policy);
+    assert.match(await runtime.text(),/export function cell\b/);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/region-runtime.mjs`)).status,404,'the general renderer emits no region runtime');
   }finally{await new Promise(resolve=>server.close(resolve));}
 });
 test('17: TypeScript Language Service resolves imported component, rename and prop completion in virtual files',async()=>{

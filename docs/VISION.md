@@ -77,13 +77,15 @@ with Svelte and React, and outperforming them remains an ambition, but the
 difference Elnor offers lies in the guarantees above. Rendering is a base that
 has to be correct, small and fast.
 
-Elnor adopts the general renderer as its main rendering path. Measurements
-of the region backend found no CPU advantage over it in any measured workload,
-including lists of 1,000 rows, while its runtime is 2.5 to 3 times larger. The
-build still selects the region backend for eligible components until that
-change is planned; the region backend then remains an experiment. Techniques that prove useful, such as cloning
-templates for static structure, move to the general renderer one at a time and
-with measurements. Its static analysis can also feed the verified guarantees.
+The general renderer is the default rendering path. Measurements of the
+region backend found no CPU advantage over it in any measured workload,
+including lists of 1,000 rows, while its runtime is 2.5 to 3 times larger.
+Before the switch, the general renderer
+[passed the fixed Svelte parity matrix](mvp/GENERAL-RENDERER-DEFAULT.md) in two
+cohorts. The region backend remains an experiment. Techniques that prove
+useful, such as cloning templates for static structure, move to the general
+renderer one at a time and with measurements. Its static analysis can also feed
+the verified guarantees, as it already does for the experimental hot update.
 
 ## Principles
 

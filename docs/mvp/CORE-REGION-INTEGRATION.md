@@ -1,3 +1,6 @@
+> **Superseded default.** The general renderer is now the default and the region
+> backend is an opt-in experiment. See [General renderer as the default](GENERAL-RENDERER-DEFAULT.md).
+
 # Public region core integration
 
 The confirmed region backend is now integrated into `elnor/src`. The entire public source tree is byte-identical to the source revision in both fixed-matrix Svelte cohorts. Automatic proof-based selection keeps the existing Surface syntax; unsupported cases retain the general renderer. This is a local source integration, not a package publication.

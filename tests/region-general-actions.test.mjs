@@ -66,7 +66,7 @@ async function mount(t, action) {
   const file = path.join(directory, 'Counter.eln');
   fs.writeFileSync(file, counter(action));
   const outputDir = path.join(directory, 'build');
-  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check')});
+  const build = buildSurfaceProject(file, {outputDir, checkOutputDir: path.join(directory, 'check'), regionBackend: true});
   const output = fs.readFileSync(path.join(outputDir, build.entryOutput), 'utf8');
   const module = await import(pathToFileURL(path.join(outputDir, build.entryOutput)));
   setupDOM();

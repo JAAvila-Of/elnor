@@ -474,7 +474,7 @@ function hotExperiment(ir,plan,sources){
 }
 // regionBackend: false compiles every component with the general renderer,
 // the reference that region behavior is compared against.
-function prepareGraph(graph,{hotEntry,regionBackend=true}={}){
+function prepareGraph(graph,{hotEntry,regionBackend=false}={}){
   const planner=createModulePlanner(),files=new Map(),records=surfaceRecords(graph),components=surfaceOutputs(records);
   const outputs=new Map(components.map(component=>[sourceKey(component.source),component]));
   const sources=new Map(records.map(ir=>[sourceKey(ir.filename),ir]));
@@ -497,7 +497,9 @@ function prepareGraph(graph,{hotEntry,regionBackend=true}={}){
   const hotRoot=hotEntry? sources.get(hotEntry):undefined;
   const derived=hotRoot&&moduleRevision?proveDerivedListReplacement(hotRoot,sources,planned.get(hotRoot),renderModuleProofs):undefined;
   const experiment=derived?{contract:derived}
-    :hotRoot?hotExperiment(hotRoot,regionPlans.get(hotEntry),sources):undefined;
+    // The hot experiment emits general code but uses the region analysis as
+    // its proof of a static shape, so it runs even when regions do not emit.
+    :hotRoot?hotExperiment(hotRoot,regionBackend?regionPlans.get(hotEntry):analyzeRegion(hotRoot,{components:sources}),sources):undefined;
   let regionUsed=false;
   for(const ir of records){
     const key=sourceKey(ir.filename),filename=outputs.get(key).file;

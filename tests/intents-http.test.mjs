@@ -1,5 +1,5 @@
 // The HTTP transport and the journal against the loopback reference provider.
-// The journal runs on in-memory storage with a serial lock manager and short
+// The journal runs on an in-memory store with a serial lock manager and short
 // retry delays, so every wait is bounded.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,20 +12,12 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {launchLocalProcess} from '../examples/persistent-task-desk/local-process.mjs';
 import {createIntentJournal, httpIntentTransport} from '../src/intents.mjs';
+import {memoryIntentStore} from './intent-store.mjs';
 
 const durable = Symbol.for('elnor.durable');
 const provider = fileURLToPath(new URL('../examples/durable-save/provider_fixture.py', import.meta.url));
 const python = process.env.ELNOR_TEST_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3');
 const prefix = 'elnor-intents-http-';
-
-function memoryStorage() {
-  const values = new Map();
-  return {
-    getItem: key => values.has(key) ? values.get(key) : null,
-    setItem: (key, value) => { values.set(key, String(value)); },
-    removeItem: key => { values.delete(key); }
-  };
-}
 
 function serialLocks() {
   let tail = Promise.resolve();
@@ -72,7 +64,7 @@ async function providerFixture(t) {
 }
 
 function setup({url, headers, scope = 'alice', retry = {firstMs: 20, maxMs: 40}, fetch}) {
-  const journal = createIntentJournal({storage: memoryStorage(), scope, locks: serialLocks(), retry});
+  const journal = createIntentJournal({store: memoryIntentStore(), scope, locks: serialLocks(), retry});
   const save = journal.operation('notes.save', {version: 1, transport: httpIntentTransport({baseUrl: url, headers, fetch})});
   const hook = save[durable].journal;
   const admit = input => hook.admit({journal: 'notes', owner: '"n1"', member: 'save', operation: 'notes.save', version: 1, params: [input], input});
@@ -96,8 +88,8 @@ test('a journal applies through HTTP and replays after a lost reply', async t =>
   t.after(() => journal.stop());
   journal.start();
   assert.ok(await admit(note('first')));
-  await until(() => journal.outcomes().length === 1, 'the outcome');
-  const [{outcome}] = journal.outcomes();
+  await until(async () => (await journal.outcomes()).length === 1, 'the outcome');
+  const [{outcome}] = await journal.outcomes();
   assert.equal(outcome.status, 'applied');
   assert.equal(outcome.result.revision, 1);
   assert.ok(sent >= 3, 'the unstamped request, the lost reply and the replay');
@@ -112,11 +104,11 @@ test('an outage keeps the intent pending until the provider returns', async t =>
   await f.stop();
   assert.ok(await admit(note('first')));
   await sleep(150);
-  assert.equal(journal.outcomes().length, 0);
-  assert.equal(journal.blocked().length, 0);
+  assert.equal((await journal.outcomes()).length, 0);
+  assert.equal((await journal.blocked()).length, 0);
   await f.start();
-  await until(() => journal.outcomes().length === 1, 'the outcome');
-  assert.equal(journal.outcomes()[0].outcome.status, 'applied');
+  await until(async () => (await journal.outcomes()).length === 1, 'the outcome');
+  assert.equal((await journal.outcomes())[0].outcome.status, 'applied');
   assert.equal((await f.stats()).effects, 1);
 });
 
@@ -126,15 +118,15 @@ test('a provider reset blocks a stamped intent', async t => {
   t.after(() => journal.stop());
   journal.start();
   await admit(note('first'));
-  await until(() => journal.outcomes().length === 1, 'the first outcome');
-  await journal.outcomes()[0].acknowledge();
+  await until(async () => (await journal.outcomes()).length === 1, 'the first outcome');
+  await (await journal.outcomes())[0].acknowledge();
   await f.stop();
   for (const suffix of ['', '-wal', '-shm']) fs.rmSync(f.file + suffix, {force: true});
   const fresh = await f.start();
   assert.notEqual(fresh.epoch, f.epoch);
   await admit(note('second'));
-  await until(() => journal.blocked().length === 1, 'the blocked record');
-  assert.equal(journal.blocked()[0].reason, 'epoch');
+  await until(async () => (await journal.blocked()).length === 1, 'the blocked record');
+  assert.equal((await journal.blocked())[0].reason, 'epoch');
   assert.equal((await f.stats()).effects, 0);
 });
 
@@ -153,8 +145,8 @@ test('a retired receipt resolves as unavailable', async t => {
   await f.stop('retire\nstop\n');
   await f.start();
   journal.start();
-  await until(() => journal.outcomes().length === 1, 'the outcome');
-  assert.equal(journal.outcomes()[0].outcome.status, 'unavailable');
+  await until(async () => (await journal.outcomes()).length === 1, 'the outcome');
+  assert.equal((await journal.outcomes())[0].outcome.status, 'unavailable');
   assert.equal((await f.stats()).effects, 1);
 });
 
@@ -167,8 +159,8 @@ test('a session for another account pauses the journal', async t => {
   journal.start();
   await admit(note('first'));
   await until(() => paused === 1, 'the pause');
-  assert.equal(journal.outcomes().length, 0);
-  assert.equal(journal.blocked().length, 0);
+  assert.equal((await journal.outcomes()).length, 0);
+  assert.equal((await journal.blocked()).length, 0);
   assert.equal((await f.stats()).effects, 0);
 });
 
@@ -189,9 +181,9 @@ test('a body that is not JSON or echoes another key blocks', async t => {
   journal.start();
   for (const turn of [1, 2]) {
     assert.ok(await admit(note('first')), `admission ${turn}`);
-    await until(() => journal.blocked().length === 1, `block ${turn}`);
-    assert.equal(journal.blocked()[0].reason, 'mismatch');
-    await journal.blocked()[0].discard();
+    await until(async () => (await journal.blocked()).length === 1, `block ${turn}`);
+    assert.equal((await journal.blocked())[0].reason, 'mismatch');
+    await (await journal.blocked())[0].discard();
   }
 });
 

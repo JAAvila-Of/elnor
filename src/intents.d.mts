@@ -75,8 +75,33 @@ export interface BlockedRecord {
   discard(): Promise<void>;
 }
 
+/**
+ * Where a journal keeps its records: the text of each scope's journal under
+ * one key. A write or a removal resolves once it is committed, and `subscribe`
+ * hears the keys that other tabs changed.
+ */
+export interface IntentStore {
+  read(key: string): Promise<string | null>;
+  write(key: string, text: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  subscribe(listener: (key: string) => void): () => void;
+}
+
+export interface IndexedDbIntentStoreOptions {
+  /** The database name. Defaults to `elnor-intents`. */
+  name?: string;
+  /** Defaults to `globalThis.indexedDB`. */
+  indexedDB?: IDBFactory;
+  /** Defaults to `new BroadcastChannel('elnor-intents')`. */
+  channel?: () => BroadcastChannel;
+}
+
+/** The IndexedDB intent store, coherent across tabs. Throws a TypeError when IndexedDB is not available. */
+export function indexedDbIntentStore(options?: IndexedDbIntentStoreOptions): IntentStore;
+
 export interface IntentJournalOptions {
-  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+  /** Defaults to `indexedDbIntentStore()`. */
+  store?: IntentStore;
   /** The account the intents belong to. A journal only reads and sends intents of its scope. */
   scope: string;
   /** Defaults to `navigator.locks`. */
@@ -93,11 +118,11 @@ export interface IntentJournal {
   start(): void;
   /** Aborts the requests in flight and sends nothing more until `start`. */
   stop(): void;
-  outcomes(): ReadonlyArray<UnconsumedOutcome>;
-  blocked(): ReadonlyArray<BlockedRecord>;
+  outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
+  blocked(): Promise<ReadonlyArray<BlockedRecord>>;
   /** Called when the provider refuses the scope for the current session; the journal sends nothing until `start`. */
   onPaused(listener: (reason: 'scope-refused') => void): () => void;
 }
 
-/** Throws a TypeError when the Web Locks API is not available. */
+/** Throws a TypeError when the Web Locks API is not available, or when no store is given and IndexedDB is not available. */
 export function createIntentJournal(options: IntentJournalOptions): IntentJournal;

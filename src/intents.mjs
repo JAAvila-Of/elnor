@@ -2,10 +2,13 @@
 // them with the provider through a transport, so that a write survives a
 // reload, a lost reply or an unmount without being applied twice.
 //
-// All intents of a scope live under one storage key, `elnor-intents:{scope}`,
-// as {format: 1, epoch, records}. Every read-modify-write of that key runs
-// inside a Web Lock of the same name, so two tabs never admit two intents for
-// one owner and each terminal outcome has one consumer.
+// All intents of a scope live under one key of an intent store,
+// `elnor-intents:{scope}`, as the JSON text of {format: 1, epoch, records}.
+// Every read-modify-write of that key runs inside a Web Lock of the same name,
+// and a write resolves only once it is committed, so two tabs never admit two
+// intents for one owner and each terminal outcome has one consumer. The store
+// is IndexedDB, whose transactions are coherent across tabs; localStorage is
+// not, even under the lock, so it is not offered.
 //
 // A record is pending until the provider decides it, terminal until a member
 // consumes it or the host acknowledges it, and blocked when it cannot be sent
@@ -18,29 +21,33 @@
 
 const hookKey = Symbol.for('elnor.durable');
 const storagePrefix = 'elnor-intents:';
+const objectStore = 'journals';
 const blockReasons = new Set(['key-conflict', 'epoch', 'mismatch', 'version', 'unknown-operation', 'corrupt']);
 const identityFields = ['journal', 'owner', 'member', 'operation', 'key', 'admittedBy'];
 
-export function createIntentJournal({storage, scope, locks = globalThis.navigator?.locks, createKey = () => crypto.randomUUID(), retry = {firstMs: 1000, maxMs: 60000}} = {}) {
+export function createIntentJournal({store, scope, locks = globalThis.navigator?.locks, createKey = () => crypto.randomUUID(), retry = {firstMs: 1000, maxMs: 60000}} = {}) {
   if (!locks) throw new TypeError('Durable intents need the Web Locks API');
   if (typeof scope !== 'string' || !scope) throw new TypeError('A journal needs the account scope as a non-empty string');
+  store ??= indexedDbIntentStore();
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
   const inFlight = new Map(), waiting = new Map(), attempts = new Map();
-  let running = false, paused = false;
+  let running = false, paused = false, unsubscribe;
+  // Each read for watchers and each committed write takes a ticket in order.
+  // Watchers only see a state whose ticket is newer than the last one shown,
+  // so a read that started before a write never shows the older records.
+  let issued = 0, shownTicket = 0;
 
   const exclusive = task => locks.request(name, task);
-  const read = () => parseJournal(storage.getItem(name));
-  const readOrEmpty = () => {
-    try { return read(); } catch { return parseJournal(null); }
-  };
-  const write = state => {
-    storage.setItem(name, JSON.stringify({format: 1, epoch: state.epoch, records: state.records}));
+  const read = async () => parseJournal(await store.read(name));
+  const readOrEmpty = () => read().catch(() => parseJournal(null));
+  const write = async state => {
+    await store.write(name, JSON.stringify({format: 1, epoch: state.epoch, records: state.records}));
     notify(state);
   };
-  const remove = test => exclusive(() => {
-    const state = read(), index = state.unreadable === null ? state.records.findIndex(test) : -1;
-    if (index >= 0) write({...state, records: state.records.toSpliced(index, 1)});
+  const remove = test => exclusive(async () => {
+    const state = await read(), index = state.unreadable === null ? state.records.findIndex(test) : -1;
+    if (index >= 0) await write({...state, records: state.records.toSpliced(index, 1)});
   });
   const valid = item => wellFormed(item, scope);
   const find = (state, key, phase) => state.unreadable === null ? state.records.find(item => valid(item) && item.key === key && item.state === phase) : undefined;
@@ -67,8 +74,17 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     watcher.last = text;
     try { watcher.listener(current); } catch (error) { report(error); }
   };
-  const notify = state => {
+  const notify = (state, ticket = ++issued) => {
+    if (ticket < shownTicket) return;
+    shownTicket = ticket;
     for (const watcher of watchers) show(watcher, state);
+  };
+  // A read that fails shows nothing: it does not mean that no record exists.
+  const refresh = async () => {
+    const ticket = ++issued;
+    let state;
+    try { state = await read(); } catch { return; }
+    notify(state, ticket);
   };
 
   const pause = () => {
@@ -98,7 +114,7 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     inFlight.set(key, controller);
     try {
       while (running && !paused && !controller.signal.aborted) {
-        const record = find(read(), key, 'pending');
+        const record = find(await read(), key, 'pending');
         const operation = record && operations.get(record.operation);
         if (!operation || operation.version !== record.version) return;
         let answer;
@@ -107,13 +123,13 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
         } catch {
           answer = {kind: 'retry'};
         }
-        const next = await exclusive(() => {
-          const state = read(), current = find(state, key, 'pending');
+        const next = await exclusive(async () => {
+          const state = await read(), current = find(state, key, 'pending');
           if (!current) return 'done';
           // Another tab stamped the record while this request was out.
           if (current.epoch !== record.epoch) return 'send';
           const {record: updated, epoch, next} = applyAnswer(current, answer, state.epoch);
-          if (updated !== current || epoch !== state.epoch) write({...state, epoch, records: state.records.map(item => item === current ? updated : item)});
+          if (updated !== current || epoch !== state.epoch) await write({...state, epoch, records: state.records.map(item => item === current ? updated : item)});
           return next;
         });
         if (next === 'retry') return schedule(key);
@@ -133,8 +149,8 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
   async function reconcile() {
     let keys;
     try {
-      keys = await exclusive(() => {
-        const state = read();
+      keys = await exclusive(async () => {
+        const state = await read();
         if (state.unreadable !== null) return [];
         let changed = false;
         const records = state.records.map(item => {
@@ -145,7 +161,7 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
           changed = true;
           return block(item, reason);
         });
-        if (changed) write({...state, records});
+        if (changed) await write({...state, records});
         return records.filter(item => valid(item) && item.state === 'pending').map(item => item.key);
       });
     } catch {
@@ -160,15 +176,16 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     attempts.clear();
     reconcile();
   };
-  const storageChanged = event => {
-    if (event.key === name || event.key === null) notify(readOrEmpty());
+  // Another tab committed a write or a removal.
+  const changed = key => {
+    if (key === name) refresh();
   };
 
   const hook = {
     watch(journal, owner, listener) {
       const watcher = {journal, owner, listener, last: undefined};
       watchers.add(watcher);
-      show(watcher, readOrEmpty());
+      refresh();
       return () => { watchers.delete(watcher); };
     },
     async admit({journal, owner, member, operation, version, params, input}) {
@@ -179,15 +196,15 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
       if (!frozen) return undefined;
       let key;
       try {
-        key = await exclusive(() => {
-          const state = read();
+        key = await exclusive(async () => {
+          const state = await read();
           // Unconsumed outcomes do not hold the owner back; a pending or blocked record does.
           if (state.unreadable !== null || owned(state, journal, owner).some(item => !valid(item) || item.state !== 'terminal')) return undefined;
           const record = {
             format: 1, journal, scope, owner, member, operation, version, key: createKey(), epoch: state.epoch,
             params: frozen.params, input: frozen.input, state: 'pending', admittedBy: instance
           };
-          write({...state, records: [...state.records, record]});
+          await write({...state, records: [...state.records, record]});
           return record.key;
         });
       } catch {
@@ -197,8 +214,8 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
       return key;
     },
     consume(id, deliver, accept = () => true) {
-      return exclusive(() => {
-        const state = read(), record = find(state, id, 'terminal');
+      return exclusive(async () => {
+        const state = await read(), record = find(state, id, 'terminal');
         // The outcomes of one owner are consumed in admission order.
         if (!record || owned(state, record.journal, record.owner).find(item => valid(item) && item.state === 'terminal') !== record) return false;
         // A consumer that stopped watching the owner while it waited for the
@@ -207,7 +224,7 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
         let failure;
         try { deliver(view(record)); } catch (error) { failure = {error}; }
         // A failing handler still counts as delivered, so it does not run again.
-        write({...state, records: state.records.filter(item => item !== record)});
+        await write({...state, records: state.records.filter(item => item !== record)});
         if (failure) throw failure.error;
         return true;
       });
@@ -228,9 +245,9 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     start() {
       paused = false;
       if (!running) {
+        unsubscribe = store.subscribe(changed);
         running = true;
         globalThis.addEventListener?.('online', online);
-        globalThis.addEventListener?.('storage', storageChanged);
       }
       reconcile();
     },
@@ -238,15 +255,16 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
       if (!running) return;
       running = false;
       globalThis.removeEventListener?.('online', online);
-      globalThis.removeEventListener?.('storage', storageChanged);
+      unsubscribe();
+      unsubscribe = undefined;
       for (const controller of inFlight.values()) controller.abort();
       for (const timer of waiting.values()) clearTimeout(timer);
       inFlight.clear();
       waiting.clear();
       attempts.clear();
     },
-    outcomes() {
-      const state = readOrEmpty();
+    async outcomes() {
+      const state = await readOrEmpty();
       if (state.unreadable !== null) return [];
       return state.records.filter(item => valid(item) && item.state === 'terminal').map(record => ({
         id: record.key, journal: record.journal, owner: record.owner, member: record.member, operation: record.operation,
@@ -254,15 +272,15 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
         acknowledge: () => remove(item => valid(item) && item.key === record.key && item.state === 'terminal')
       }));
     },
-    blocked() {
-      const state = readOrEmpty(), text = state.unreadable;
+    async blocked() {
+      const state = await readOrEmpty(), text = state.unreadable;
       if (text !== null) {
         return [{
           id: corruptId(text), journal: '', owner: '', member: '', operation: '', reason: 'corrupt', export: () => text,
-          discard: () => exclusive(() => {
-            if (storage.getItem(name) !== text) return;
-            storage.removeItem(name);
-            notify(read());
+          discard: () => exclusive(async () => {
+            if (await store.read(name) !== text) return;
+            await store.remove(name);
+            notify(parseJournal(null));
           })
         }];
       }
@@ -278,6 +296,79 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
     onPaused(listener) {
       pauseListeners.add(listener);
       return () => { pauseListeners.delete(listener); };
+    }
+  };
+}
+
+// The intent store over IndexedDB: one database with one object store that
+// keeps each journal's text under an out-of-line key. A write or a removal
+// resolves once its transaction has completed, then tells the other tabs
+// through a BroadcastChannel so that their journals read the change.
+export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory = globalThis.indexedDB, channel = () => new BroadcastChannel('elnor-intents')} = {}) {
+  if (!factory) throw new TypeError('Durable intents need IndexedDB');
+  const listeners = new Set();
+  let opening, port;
+  // The connection opens on first use. When another page upgrades or deletes
+  // the database, it is closed and the next call opens it again.
+  const open = () => opening ??= new Promise((resolve, reject) => {
+    const request = factory.open(name, 1);
+    request.onupgradeneeded = () => { request.result.createObjectStore(objectStore); };
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => { database.close(); opening = undefined; };
+      database.onclose = () => { opening = undefined; };
+      resolve(database);
+    };
+    request.onerror = () => reject(request.error);
+  }).catch(error => {
+    opening = undefined;
+    throw error;
+  });
+  const run = async (mode, operate) => {
+    const database = await open();
+    return new Promise((resolve, reject) => {
+      const transaction = database.transaction(objectStore, mode);
+      const request = operate(transaction.objectStore(objectStore));
+      transaction.oncomplete = () => resolve(request.result);
+      transaction.onabort = () => reject(transaction.error ?? new DOMException('The intent store transaction was aborted', 'AbortError'));
+    });
+  };
+  // The change is already committed, so a notice that fails does not fail it.
+  const announce = key => {
+    try {
+      const target = port ?? channel();
+      target.postMessage(key);
+      if (target !== port) target.close();
+    } catch (error) {
+      report(error);
+    }
+  };
+  return {
+    async read(key) {
+      const value = await run('readonly', journals => journals.get(key));
+      return value === undefined ? null : String(value);
+    },
+    async write(key, text) {
+      await run('readwrite', journals => journals.put(String(text), key));
+      announce(key);
+    },
+    async remove(key) {
+      await run('readwrite', journals => journals.delete(key));
+      announce(key);
+    },
+    subscribe(listener) {
+      if (!port) {
+        port = channel();
+        port.onmessage = event => {
+          if (typeof event.data === 'string') for (const each of [...listeners]) each(event.data);
+        };
+      }
+      listeners.add(listener);
+      return () => {
+        if (!listeners.delete(listener) || listeners.size) return;
+        port.close();
+        port = undefined;
+      };
     }
   };
 }

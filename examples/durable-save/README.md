@@ -47,15 +47,17 @@ account. An application with several notes would use the note's id.
 ## The host
 
 ```ts
-const {journal, notes} = createNotes({storage: localStorage, account, baseUrl});
+const {journal, notes} = createNotes({account, baseUrl});
 mount(root, {notes});
 ```
 
-`createNotes` starts the journal. Call `journal.stop()` before the session ends
-or changes, and create another journal for the next account. The
-`X-Fixture-Account` header stands in for the session in this fixture.
-`journal.outcomes()` and `journal.blocked()` list what no view consumed or what
-cannot be sent; the host decides what to show for them.
+`createNotes` starts the journal, which keeps its records in IndexedDB so that
+every tab of the browser profile sees one journal; the tests pass an in-memory
+`store` instead. Call `journal.stop()` before the session ends or changes, and
+create another journal for the next account. The `X-Fixture-Account` header
+stands in for the session in this fixture. `journal.outcomes()` and
+`journal.blocked()` resolve to what no view consumed or what cannot be sent;
+the host decides what to show for them.
 
 ## Running it
 
@@ -78,8 +80,8 @@ compiles this example, mounts it on the fake DOM and runs it against the
 provider:
 
 - a reply lost after the commit, then an unmount and a new journal on the same
-  storage: the new view shows `Saved` and the provider applied one effect;
-- a blocked record in storage: the view shows `Blocked`, Save stays disabled
+  store: the new view shows `Saved` and the provider applied one effect;
+- a blocked record in the store: the view shows `Blocked`, Save stays disabled
   and nothing is sent;
 - a conflict with a write made through another key: the view shows the other
   text, and saving after "Keep my text" or "Use their text" applies with a new
@@ -94,19 +96,20 @@ The journal, the transport and the runtime have their own tests:
 [groups](../../tests/durable-groups.test.mjs),
 [types](../../tests/durable-types.test.mjs) and
 [provider](../../tests/durable-provider.test.mjs). They run in Node.js with a
-lock manager passed by the test. Acceptance in a browser, including two tabs,
-has not run yet.
+lock manager and an in-memory store passed by the test; Node.js has no
+IndexedDB, so the IndexedDB store is only tested against a minimal fake of it.
+Acceptance in a browser, including two tabs, has not run yet.
 
 ## Comparison with the handwritten version
 
 | | RecoverableSave | DurableSave |
 | --- | --- | --- |
 | Nonblank lines of view and client or host | 60 + 136 = 196 | 45 + 21 = 66 |
-| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 33563, 10357 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 37400, 11547 |
 
 The byte counts were measured on this branch with the same method for both:
 the compiled view module and entry, plus the client or host transpiled by
-TypeScript. DurableSave also counts `intents.mjs` (19923 bytes, 5955 gzip-9)
+TypeScript. DurableSave also counts `intents.mjs` (23764 bytes, 7146 gzip-9)
 and `durable-runtime.mjs` (7394 bytes, 2608 gzip-9), which every durable
 component of an application shares. `runtime.mjs` is left out of both. The
 [recovery journal](../../docs/mvp/RECOVERY-JOURNAL.md) reported 11039 JS bytes

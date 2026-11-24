@@ -1,23 +1,15 @@
 // The intent journal stores durable intents per account scope and reconciles
-// them through an injected transport. These tests use an in-memory storage, a
-// lock manager that runs callbacks one at a time and a scripted transport.
+// them through an injected transport. These tests use an in-memory intent
+// store, a lock manager that runs callbacks one at a time and a scripted
+// transport.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {setImmediate as tick} from 'node:timers/promises';
-import {createIntentJournal} from '../src/intents.mjs';
+import {createIntentJournal, indexedDbIntentStore} from '../src/intents.mjs';
+import {memoryIntentStore, storedText} from './intent-store.mjs';
 
 const durable = Symbol.for('elnor.durable');
 const storageKey = 'elnor-intents:alice';
-
-function memoryStorage(items = {}) {
-  const values = new Map(Object.entries(items));
-  return {
-    values,
-    getItem: key => values.has(key) ? values.get(key) : null,
-    setItem: (key, value) => { values.set(key, String(value)); },
-    removeItem: key => { values.delete(key); }
-  };
-}
 
 function serialLocks() {
   let tail = Promise.resolve();
@@ -54,7 +46,7 @@ function keys() {
 }
 
 function stored(storage) {
-  const text = storage.getItem(storageKey);
+  const text = storedText(storage, storageKey);
   return text === null ? null : JSON.parse(text);
 }
 
@@ -70,8 +62,8 @@ async function settle() {
   for (let turn = 0; turn < 20; turn++) await tick();
 }
 
-function setup({storage = memoryStorage(), locks = serialLocks(), answers = [], transport = scriptedTransport(answers), version = 1, retry, start = true} = {}) {
-  const journal = createIntentJournal({storage, scope: 'alice', locks, createKey: keys(), retry});
+function setup({storage = memoryIntentStore(), locks = serialLocks(), answers = [], transport = scriptedTransport(answers), version = 1, retry, start = true} = {}) {
+  const journal = createIntentJournal({store: storage, scope: 'alice', locks, createKey: keys(), retry});
   const update = journal.operation('tasks.update', {version, transport});
   const hook = update[durable].journal;
   if (start) journal.start();
@@ -90,7 +82,7 @@ function record(fields = {}) {
 }
 
 function seeded(records, epoch = 'E1') {
-  return memoryStorage({[storageKey]: JSON.stringify({format: 1, epoch, records})});
+  return memoryIntentStore(new Map([[storageKey, JSON.stringify({format: 1, epoch, records})]]));
 }
 
 const applied = (epoch, result = {revision: 2}) => ({kind: 'applied', epoch, result});
@@ -106,7 +98,7 @@ test('an operation call returns an inert request and carries the internal hook',
 });
 
 test('a journal needs a scope and operations need a unique name, an integer version and a transport', () => {
-  assert.throws(() => createIntentJournal({storage: memoryStorage(), scope: '', locks: serialLocks()}), TypeError);
+  assert.throws(() => createIntentJournal({store: memoryIntentStore(), scope: '', locks: serialLocks()}), TypeError);
   const {journal, transport} = setup({start: false});
   assert.throws(() => journal.operation('tasks.update', {version: 1, transport}), /already registered/);
   assert.throws(() => journal.operation('tasks.remove', {version: '1', transport}), /integer version/);
@@ -191,7 +183,7 @@ test('a new intent is stamped with the epoch the journal knows', async () => {
 });
 
 test('a stamp written by another tab while a request was out is not taken as a restamp', async () => {
-  const storage = memoryStorage(), locks = serialLocks(), held = Promise.withResolvers();
+  const storage = memoryIntentStore(), locks = serialLocks(), held = Promise.withResolvers();
   let unstamped = 0;
   const transport = scriptedTransport();
   transport.send = request => {
@@ -225,7 +217,7 @@ test('a stamped intent is never restamped', async () => {
   assert.equal(value.records[0].epoch, 'E1');
   assert.equal(value.records[0].reason, 'epoch');
   assert.equal(value.epoch, 'E2');
-  assert.deepEqual(journal.blocked().map(item => item.reason), ['epoch']);
+  assert.deepEqual((await journal.blocked()).map(item => item.reason), ['epoch']);
 });
 
 test('an answer under another epoch or a mismatch blocks the record', async () => {
@@ -243,8 +235,8 @@ test('terminal answers become outcomes with late false in the admitting journal 
   const id = await first.hook.admit(entry());
   await until(() => stored(storage).records[0].state === 'terminal', 'the outcome');
   const second = setup({storage, locks, start: false});
-  assert.deepEqual(first.journal.outcomes()[0].outcome, {status: 'rejected', reason: {kind: 'conflict'}, late: false});
-  assert.deepEqual(second.journal.outcomes()[0].outcome, {status: 'rejected', reason: {kind: 'conflict'}, late: true});
+  assert.deepEqual((await first.journal.outcomes())[0].outcome, {status: 'rejected', reason: {kind: 'conflict'}, late: false});
+  assert.deepEqual((await second.journal.outcomes())[0].outcome, {status: 'rejected', reason: {kind: 'conflict'}, late: true});
   const delivered = [];
   assert.equal(await second.hook.consume(id, view => delivered.push(view)), true);
   assert.deepEqual(delivered, [{id, member: 'save', state: 'terminal', outcome: {status: 'rejected', reason: {kind: 'conflict'}, late: true}, params: [{title: 'Draft'}]}]);
@@ -254,7 +246,7 @@ test('an unavailable answer is a terminal outcome', async () => {
   const {storage, journal, hook} = setup({storage: seeded([]), answers: [{kind: 'unavailable', epoch: 'E1'}]});
   await hook.admit(entry());
   await until(() => stored(storage).records[0].state === 'terminal', 'the outcome');
-  assert.deepEqual(journal.outcomes()[0].outcome, {status: 'unavailable', late: false});
+  assert.deepEqual((await journal.outcomes())[0].outcome, {status: 'unavailable', late: false});
 });
 
 test('consume delivers once and removes', async () => {
@@ -301,7 +293,7 @@ test('unconsumed outcomes stay until acknowledged', async () => {
   first.journal.stop();
   const later = setup({storage, locks});
   await settle();
-  const [outcome] = later.journal.outcomes();
+  const [outcome] = await later.journal.outcomes();
   assert.deepEqual({...outcome, acknowledge: undefined}, {
     id, journal: 'task-edit', owner: '"t1"', member: 'save', operation: 'tasks.update', input: {title: 'Draft'},
     outcome: {status: 'applied', result: {revision: 2}, late: true}, acknowledge: undefined
@@ -309,14 +301,14 @@ test('unconsumed outcomes stay until acknowledged', async () => {
   assert.equal(later.transport.requests.length, 0);
   await outcome.acknowledge();
   assert.deepEqual(stored(storage).records, []);
-  assert.deepEqual(later.journal.outcomes(), []);
+  assert.deepEqual(await later.journal.outcomes(), []);
 });
 
 test('blocked records refuse admission until discarded', async () => {
   const {storage, hook, journal} = setup({storage: seeded([]), answers: [{kind: 'key-conflict'}]});
   await hook.admit(entry());
   await until(() => stored(storage).records[0].state === 'blocked', 'the block');
-  const [blocked] = journal.blocked();
+  const [blocked] = await journal.blocked();
   assert.deepEqual({...blocked, export: undefined, discard: undefined}, {
     id: 'k1', journal: 'task-edit', owner: '"t1"', member: 'save', operation: 'tasks.update', reason: 'key-conflict', export: undefined, discard: undefined
   });
@@ -467,36 +459,40 @@ test('watch reports the record of one owner as it changes', async () => {
   assert.deepEqual(other, [null]);
 });
 
-test('watch follows writes made by another tab', async t => {
-  const listeners = new Map();
-  const original = {add: globalThis.addEventListener, remove: globalThis.removeEventListener};
-  globalThis.addEventListener = (type, listener) => listeners.set(type, listener);
-  globalThis.removeEventListener = (type, listener) => { if (listeners.get(type) === listener) listeners.delete(type); };
-  t.after(() => {
-    globalThis.addEventListener = original.add;
-    globalThis.removeEventListener = original.remove;
-  });
-  const storage = seeded([]);
-  const observer = setup({storage});
+test("another store's committed write notifies a started journal", async () => {
+  const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
+  const observer = setup({storage: memoryIntentStore(values), start: false});
+  // Another tab writes through its own store on the same database.
+  const tab = memoryIntentStore(values);
   const views = [];
   observer.hook.watch('task-edit', '"t1"', view => views.push(view?.state ?? null));
-  // Another tab writes the same storage; this page only hears the storage event.
-  storage.setItem(storageKey, JSON.stringify({format: 1, epoch: 'E1', records: [record()]}));
-  listeners.get('storage')({type: 'storage', key: 'elnor-intents:bob'});
+  await settle();
+  const journalOf = item => JSON.stringify({format: 1, epoch: 'E1', records: [item]});
+  await tab.write(storageKey, journalOf(record({state: 'blocked', reason: 'mismatch'})));
+  await settle();
+  assert.deepEqual(views, [null], 'a journal that has not started does not follow other tabs');
+  observer.journal.start();
+  await tab.write('elnor-intents:bob', journalOf(record({scope: 'bob'})));
+  await settle();
   assert.deepEqual(views, [null]);
-  listeners.get('storage')({type: 'storage', key: storageKey});
-  assert.deepEqual(views, [null, 'pending']);
+  await tab.write(storageKey, journalOf(record({state: 'terminal', outcome: {status: 'applied', result: {revision: 2}}})));
+  await settle();
+  assert.deepEqual(views, [null, 'terminal']);
+  observer.journal.stop();
+  await tab.remove(storageKey);
+  await settle();
+  assert.deepEqual(views, [null, 'terminal'], 'a stopped journal does not follow other tabs');
 });
 
 test('operation version and unknown operation block', async () => {
   const storage = seeded([record({key: 'a'}), record({key: 'b', owner: '"t2"', operation: 'tasks.archive'})]);
   const {transport, journal} = setup({storage, version: 2, start: false});
-  assert.deepEqual(journal.blocked(), []);
+  assert.deepEqual(await journal.blocked(), []);
   journal.start();
   await until(() => stored(storage).records.every(item => item.state === 'blocked'), 'both blocks');
   await settle();
   assert.deepEqual(stored(storage).records.map(item => [item.key, item.reason]), [['a', 'version'], ['b', 'unknown-operation']]);
-  assert.deepEqual(journal.blocked().map(item => [item.id, item.reason]), [['a', 'version'], ['b', 'unknown-operation']]);
+  assert.deepEqual((await journal.blocked()).map(item => [item.id, item.reason]), [['a', 'version'], ['b', 'unknown-operation']]);
   assert.equal(transport.requests.length, 0);
 });
 
@@ -511,34 +507,34 @@ test('corrupt records block and are never removed silently', async () => {
   const garbage = {nonsense: true}, unkeyed = {journal: 'task-edit', owner: '"t3"', state: 'pending'};
   const storage = seeded([garbage, unkeyed]);
   const {hook, journal, transport} = setup({storage, answers: [applied('E1')]});
-  assert.deepEqual(journal.blocked().map(item => item.reason), ['corrupt', 'corrupt']);
-  assert.equal(journal.blocked()[0].export(), JSON.stringify(garbage));
+  assert.deepEqual((await journal.blocked()).map(item => item.reason), ['corrupt', 'corrupt']);
+  assert.equal((await journal.blocked())[0].export(), JSON.stringify(garbage));
   assert.equal(await hook.admit(entry({owner: '"t3"'})), undefined);
   assert.equal(await hook.admit(entry()), 'k1');
   await until(() => stored(storage).records.some(item => item.state === 'terminal'), 'the outcome');
   assert.deepEqual(stored(storage).records.slice(0, 2), [garbage, unkeyed]);
   assert.equal(transport.requests.length, 1);
-  await journal.blocked()[1].discard();
+  await (await journal.blocked())[1].discard();
   assert.deepEqual(stored(storage).records.slice(0, 1), [garbage]);
   assert.equal(await hook.admit(entry({owner: '"t3"'})), 'k2');
 });
 
 test('unreadable storage blocks every admission until discarded', async () => {
-  const storage = memoryStorage({[storageKey]: 'not json'});
+  const storage = memoryIntentStore(new Map([[storageKey, 'not json']]));
   const {hook, journal} = setup({storage});
-  const [blocked] = journal.blocked();
+  const [blocked] = await journal.blocked();
   assert.equal(blocked.reason, 'corrupt');
   assert.equal(blocked.export(), 'not json');
   assert.equal(await hook.admit(entry()), undefined);
-  assert.equal(storage.getItem(storageKey), 'not json');
+  assert.equal(storedText(storage, storageKey), 'not json');
   await blocked.discard();
-  assert.equal(storage.getItem(storageKey), null);
+  assert.equal(storedText(storage, storageKey), null);
   assert.equal(await hook.admit(entry()), 'k1');
 });
 
-test('storage that throws at admission refuses the call and sends nothing', async () => {
-  const storage = memoryStorage();
-  storage.setItem = () => { throw new DOMException('The quota has been exceeded.', 'QuotaExceededError'); };
+test('a write that rejects refuses admission and sends nothing', async () => {
+  const storage = memoryIntentStore();
+  storage.failWrites = true;
   const {transport, hook} = setup({storage});
   const views = [];
   hook.watch('task-edit', '"t1"', view => views.push(view));
@@ -546,12 +542,16 @@ test('storage that throws at admission refuses the call and sends nothing', asyn
   await settle();
   assert.equal(transport.requests.length, 0);
   assert.deepEqual(views, [null]);
-  const unreadable = memoryStorage();
-  unreadable.getItem = () => { throw new DOMException('Access is denied.', 'SecurityError'); };
+  assert.equal(stored(storage), null);
+  const unreadable = memoryIntentStore();
+  unreadable.read = async () => { throw new DOMException('Access is denied.', 'SecurityError'); };
   const other = setup({storage: unreadable});
+  const seen = [];
+  other.hook.watch('task-edit', '"t1"', view => seen.push(view));
   assert.equal(await other.hook.admit(entry()), undefined);
   await settle();
   assert.equal(other.transport.requests.length, 0);
+  assert.deepEqual(seen, [], 'a failed read is not shown as an owner without records');
 });
 
 test('inputs that are not plain JSON values are refused', async () => {
@@ -576,6 +576,101 @@ test('a journal without Web Locks throws', t => {
     if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
     else delete globalThis.navigator;
   });
-  assert.throws(() => createIntentJournal({storage: memoryStorage(), scope: 'alice'}), {name: 'TypeError', message: 'Durable intents need the Web Locks API'});
-  assert.throws(() => createIntentJournal({storage: memoryStorage(), scope: 'alice', locks: null}), {name: 'TypeError', message: 'Durable intents need the Web Locks API'});
+  assert.throws(() => createIntentJournal({store: memoryIntentStore(), scope: 'alice'}), {name: 'TypeError', message: 'Durable intents need the Web Locks API'});
+  assert.throws(() => createIntentJournal({store: memoryIntentStore(), scope: 'alice', locks: null}), {name: 'TypeError', message: 'Durable intents need the Web Locks API'});
+});
+
+test('indexedDbIntentStore throws without IndexedDB', () => {
+  assert.equal(globalThis.indexedDB, undefined, 'Node.js has no IndexedDB');
+  const missing = {name: 'TypeError', message: 'Durable intents need IndexedDB'};
+  assert.throws(() => indexedDbIntentStore(), missing);
+  assert.throws(() => indexedDbIntentStore({indexedDB: null}), missing);
+  // A journal without a store uses the IndexedDB store.
+  assert.throws(() => createIntentJournal({scope: 'alice', locks: serialLocks()}), missing);
+});
+
+// A minimal IDBFactory: requests and transactions finish on a later turn, and
+// a transaction's changes are applied just before its complete event.
+function fakeIndexedDB() {
+  const databases = new Map(), opened = [], completed = [];
+  const later = callback => setImmediate(callback);
+  const factory = {
+    opened, completed,
+    // When set, the next transaction aborts with this error and changes nothing.
+    abortNext: null,
+    contents: (name, store) => [...databases.get(name).stores.get(store)],
+    open(name, version) {
+      opened.push([name, version]);
+      const request = {};
+      later(() => {
+        const upgrade = !databases.has(name);
+        if (upgrade) databases.set(name, {version, stores: new Map()});
+        const database = databases.get(name);
+        request.result = {
+          createObjectStore(store) { database.stores.set(store, new Map()); },
+          transaction(store, mode) {
+            const data = database.stores.get(store), steps = [], transaction = {error: null};
+            const queue = step => { const result = {}; steps.push(() => { result.result = step(); }); return result; };
+            transaction.objectStore = () => ({
+              get: key => queue(() => data.get(key)),
+              put: (value, key) => queue(() => { data.set(key, value); }),
+              delete: key => queue(() => { data.delete(key); })
+            });
+            later(() => {
+              if (factory.abortNext) {
+                transaction.error = factory.abortNext;
+                factory.abortNext = null;
+                return transaction.onabort();
+              }
+              for (const step of steps) step();
+              completed.push(mode);
+              transaction.oncomplete();
+            });
+            return transaction;
+          },
+          close() {}
+        };
+        if (upgrade) request.onupgradeneeded();
+        request.onsuccess();
+      });
+      return request;
+    }
+  };
+  return factory;
+}
+
+test('the IndexedDB store commits before it resolves and tells the other tabs', async t => {
+  const factory = fakeIndexedDB(), channels = [];
+  const channel = () => {
+    const opened = new BroadcastChannel('elnor-intents-test'), close = opened.close.bind(opened);
+    const entry = {closed: false, close};
+    channels.push(entry);
+    opened.close = () => { entry.closed = true; close(); };
+    return opened;
+  };
+  // An open channel keeps Node.js running, so a failing test closes them all.
+  t.after(() => { for (const entry of channels) entry.close(); });
+  const one = indexedDbIntentStore({indexedDB: factory, channel});
+  const two = indexedDbIntentStore({indexedDB: factory, channel});
+  const heard = [];
+  const unsubscribe = two.subscribe(key => heard.push(key));
+  assert.equal(await one.read(storageKey), null);
+  assert.deepEqual(factory.opened, [['elnor-intents', 1]]);
+  await one.write(storageKey, 'text');
+  assert.deepEqual(factory.contents('elnor-intents', 'journals'), [[storageKey, 'text']], 'the write resolves after it is committed');
+  assert.equal(await two.read(storageKey), 'text');
+  await until(() => heard.length === 1, 'the notice of the write');
+  await one.remove(storageKey);
+  assert.deepEqual(factory.contents('elnor-intents', 'journals'), []);
+  assert.equal(await two.read(storageKey), null);
+  await until(() => heard.length === 2, 'the notice of the removal');
+  assert.deepEqual(heard, [storageKey, storageKey]);
+  assert.deepEqual(factory.completed, ['readonly', 'readwrite', 'readonly', 'readwrite', 'readonly']);
+  factory.abortNext = new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+  await assert.rejects(one.write(storageKey, 'lost'), {name: 'QuotaExceededError'});
+  assert.deepEqual(factory.contents('elnor-intents', 'journals'), []);
+  await settle();
+  assert.equal(heard.length, 2, 'an aborted write tells no one');
+  unsubscribe();
+  assert.ok(channels.every(entry => entry.closed), 'every channel is closed once nobody listens');
 });

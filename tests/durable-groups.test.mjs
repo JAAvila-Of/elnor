@@ -2,7 +2,7 @@
 // carry, shows the intent's status, and resumes the member's body after the
 // awaited call when the outcome arrives, in this page or a later one. These
 // tests compile a component, mount it on the fake DOM and drive a journal over
-// an in-memory storage, a serial lock manager and a transport answered by hand.
+// an in-memory store, a serial lock manager and a transport answered by hand.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,6 +13,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {createIntentJournal} from '../src/intents.mjs';
 import {buildSurfaceProject} from '../src/project-build.mjs';
 import {FakeNode, findButton, setupDOM} from './fake-dom.mjs';
+import {memoryIntentStore, storedText} from './intent-store.mjs';
 
 const intents = fileURLToPath(new URL('../src/intents.d.mts', import.meta.url));
 const storageKey = 'elnor-intents:alice';
@@ -105,22 +106,9 @@ before(async () => {
 });
 process.on('exit', () => { if (directory) fs.rmSync(directory, {recursive: true, force: true}); });
 
+// Set failNextWrite on the store to make its next write reject.
 function memoryStorage(text = JSON.stringify({format: 1, epoch: 'E1', records: []})) {
-  const values = new Map(text === null ? [] : [[storageKey, text]]);
-  return {
-    values,
-    // When set, the next write throws instead of storing.
-    failNextWrite: false,
-    getItem: key => values.has(key) ? values.get(key) : null,
-    setItem(key, value) {
-      if (this.failNextWrite) {
-        this.failNextWrite = false;
-        throw new Error('storage write failed');
-      }
-      values.set(key, String(value));
-    },
-    removeItem: key => { values.delete(key); }
-  };
+  return memoryIntentStore(new Map(text === null ? [] : [[storageKey, text]]));
 }
 
 // Runs lock callbacks one at a time. While held, new requests wait for release.
@@ -154,7 +142,7 @@ function manualTransport() {
 }
 
 function setup({storage = memoryStorage(), locks = serialLocks(), transport = manualTransport()} = {}) {
-  const journal = createIntentJournal({storage, scope: 'alice', locks});
+  const journal = createIntentJournal({store: storage, scope: 'alice', locks});
   const update = journal.operation('tasks.update', {version: 1, transport});
   const touch = journal.operation('tasks.touch', {version: 1, transport});
   journal.start();
@@ -179,7 +167,7 @@ function mount(t, {update, touch}, {first = 't1', log = []} = {}) {
 }
 
 function records(storage) {
-  const text = storage.getItem(storageKey);
+  const text = storedText(storage, storageKey);
   return text === null ? [] : JSON.parse(text).records;
 }
 
@@ -277,10 +265,10 @@ test('an owner change keeps the intent and a later mount observes it', async t =
 test('an owner change while the outcome waits for the lock leaves it to the next mount', async t => {
   const storage = memoryStorage(), locks = serialLocks();
   // Hold the lock as soon as the outcome is stored, so the consumer waits.
-  const setItem = storage.setItem;
-  storage.setItem = function (key, value) {
-    setItem.call(this, key, value);
-    if (value.includes('"terminal"')) locks.hold();
+  const write = storage.write;
+  storage.write = async (key, text) => {
+    await write(key, text);
+    if (text.includes('"terminal"')) locks.hold();
   };
   const journal = setup({storage, locks});
   t.after(() => journal.journal.stop());

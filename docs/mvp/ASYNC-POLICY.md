@@ -477,20 +477,25 @@ members' status for `blocked` too.
 ### The host
 
 ```ts
-const journal = createIntentJournal({storage: localStorage, scope: account.id});
+const journal = createIntentJournal({scope: account.id});
 const transport = httpIntentTransport({baseUrl: "/api/intents", headers: () => session.headers()});
 const tasks = {update: journal.operation<TaskEdit, TaskRevision, TaskRejection>("tasks.update", {version: 1, transport})};
 journal.start();
 ```
 
+- The journal keeps its records in IndexedDB, whose transactions are coherent
+  across tabs, and tells other tabs of each change through a
+  `BroadcastChannel`. localStorage is not offered: in headless Edge it was not
+  coherent across tabs even when every read and write ran under one Web Lock.
+  The `store` option takes another `IntentStore`, as the Node.js tests do.
 - `scope` partitions the storage by account. Call `journal.stop()` before the
   session ends or changes, and create another journal for the next account.
   When the provider answers that the scope does not belong to the session, the
   intent stays pending, the journal stops sending and `onPaused` reports it.
-- `journal.outcomes()` lists outcomes that no member consumed, each with
-  `acknowledge()`. `journal.blocked()` lists blocked records, each with
-  `export()` and `discard()`. Until a blocked record is discarded, its owner
-  admits no new intent.
+- `journal.outcomes()` resolves to the outcomes that no member consumed, each
+  with `acknowledge()`. `journal.blocked()` resolves to the blocked records,
+  each with `export()` and `discard()`. Until a blocked record is discarded,
+  its owner admits no new intent.
 - The operation's name and version are stored with the intent. A record whose
   operation the journal does not know, or whose version differs, is blocked
   and never sent with another input shape. Two tabs running different
@@ -521,8 +526,8 @@ component with an action group.
 
 DurableSave and its host take 66 nonblank lines, against 196 for the
 handwritten view and client, below the limit of 98 that the design set. Its
-delivery, with `intents.mjs` (19923 bytes) and `durable-runtime.mjs` (7394
-bytes) counted, is 33563 JS bytes and 10357 gzip-9 bytes, summed over the
+delivery, with `intents.mjs` (23764 bytes) and `durable-runtime.mjs` (7394
+bytes) counted, is 37400 JS bytes and 11547 gzip-9 bytes, summed over the
 files. The handwritten version measured the same way on the same branch is
 15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
 reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude
@@ -531,7 +536,8 @@ every durable component of an application. The
 [example](../../examples/durable-save/README.md#comparison-with-the-handwritten-version)
 lists what each version does.
 
-The behavior above is covered by Node.js tests, with a lock manager passed by
-the test and, for components, a fake DOM. Acceptance in headless Edge against
-the reference provider, including reloads, two tabs and an account change, has
-not run yet.
+The behavior above is covered by Node.js tests, with a lock manager and an
+in-memory store passed by the test and, for components, a fake DOM. Node.js
+has no IndexedDB, so the IndexedDB store is only tested against a minimal fake
+of it. Acceptance in headless Edge against the reference provider, including
+reloads, two tabs and an account change, has not run yet.

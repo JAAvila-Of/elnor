@@ -259,10 +259,7 @@ The host creates one journal and the durable operations, and passes the
 operations to components as props, like the current recovery client.
 
 ```ts
-const journal = createIntentJournal({
-  storage: localStorage,
-  scope: account.id,
-});
+const journal = createIntentJournal({scope: account.id});
 const transport = httpIntentTransport({baseUrl: "/api/intents"});
 const tasks = {
   update: journal.operation<TaskEdit, TaskRevision, TaskRejection>("tasks.update", {version: 1, transport}),
@@ -274,6 +271,16 @@ journal.start();
 The journal, the operations and the transport come from one Elnor module.
 The compiler recognizes durable operations by their type from that module.
 
+- The journal keeps the records of a scope in IndexedDB. A write completes
+  its transaction before the scope's Web Lock is released, so the next tab to
+  take the lock reads it. Other tabs hear of each change through a
+  `BroadcastChannel` and update what their components show. localStorage was
+  rejected because it is not coherent across tabs: in headless Edge, two tabs
+  of one profile each made 200 increments of one localStorage value, every one
+  inside the same Web Lock, and three runs ended at 399, 398 and 347 instead
+  of 400, while one tab alone always reached 400. A tab holding the lock could
+  read a value from before the previous holder's write, and one run of the
+  example resumed the same outcome in both tabs.
 - `scope` partitions the storage by account. The journal only reads and sends
   intents of its scope. The host calls `journal.stop()` before the session
   ends or changes; it aborts requests in flight and sends nothing more. A
@@ -285,13 +292,13 @@ The compiler recognizes durable operations by their type from that module.
   component for it is mounted, so a write is completed even if the person never
   returns to that screen. It runs again when the browser reports a connection
   and with bounded backoff after a failure.
-- `journal.outcomes()` lists terminal records that no member has
+- `journal.outcomes()` resolves to the terminal records that no member has
   consumed, for example to show a notification, and each one has
   `acknowledge()`. A rejected write is therefore never dropped without being
   visible.
-- `journal.blocked()` lists blocked records with the reason, `export()` for
-  their stored text and `discard()`. Discarding is the only way to remove a
-  blocked record, and until then its owner admits no new intent.
+- `journal.blocked()` resolves to the blocked records with the reason,
+  `export()` for their stored text and `discard()`. Discarding is the only way
+  to remove a blocked record, and until then its owner admits no new intent.
 - Admission takes a Web Lock per record, so two tabs cannot admit two intents
   for the same owner. Both tabs may reconcile the same intent; the protocol
   makes that safe.
@@ -435,8 +442,9 @@ decides. Nothing in the first scope depends on that answer.
 
 ## Left to the builder
 
-- The storage adapter for the first version (localStorage, as in the current
-  fixtures, or IndexedDB) behind the same journal interface.
+- The storage adapter for the first version, behind the same journal
+  interface. It is IndexedDB; localStorage was rejected because it is not
+  coherent across tabs under a Web Lock (see Host).
 - Backoff limits, the local retention time for unobserved outcomes and the
   journal's record format.
 - The exact HTTP paths and how the reference provider is shared by the tests.

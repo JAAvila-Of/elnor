@@ -1,7 +1,7 @@
 // The durable save example: DurableSave.eln with host.ts, compiled and mounted
 // on the fake DOM against the loopback reference provider. The journal runs on
-// an in-memory storage with a serial lock manager, so each test controls when
-// a page ends and another one starts on the same storage.
+// an in-memory store with a serial lock manager, so each test controls when a
+// page ends and another one starts on the same store.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +14,7 @@ import {createSurfaceLanguageService} from '../src/language-service.mjs';
 import {buildSurfaceProject} from '../src/project-build.mjs';
 import {getTs} from '../src/typescript.mjs';
 import {FakeNode, findButton, findInput, setupDOM} from './fake-dom.mjs';
+import {memoryIntentStore, storedText} from './intent-store.mjs';
 
 const folder = new URL('../examples/durable-save/', import.meta.url);
 const view = fileURLToPath(new URL('DurableSave.eln', folder));
@@ -44,15 +45,6 @@ after(() => {
   assert.ok(path.basename(directory).startsWith(prefix));
   fs.rmSync(directory, {recursive: true, force: true});
 });
-
-function memoryStorage() {
-  const values = new Map();
-  return {
-    getItem: key => values.has(key) ? values.get(key) : null,
-    setItem: (key, value) => { values.set(key, String(value)); },
-    removeItem: key => { values.delete(key); }
-  };
-}
 
 function serialLocks() {
   let tail = Promise.resolve();
@@ -101,7 +93,7 @@ function recordingFetch(fault) {
 }
 
 function page(t, provider, storage, fetch) {
-  const {journal, notes} = createNotes({storage, account: 'alice', baseUrl: provider.url, fetch: fetch.send, locks: serialLocks()});
+  const {journal, notes} = createNotes({store: storage, account: 'alice', baseUrl: provider.url, fetch: fetch.send, locks: serialLocks()});
   const root = new FakeNode('root');
   const dispose = mount(root, {notes});
   let ended = false;
@@ -134,7 +126,7 @@ async function until(check, message, timeout = 10000) {
 const keyOf = request => request.url.split('/').at(-1);
 
 test('saves once across a lost reply and a remount', async t => {
-  const provider = await providerFixture(t), storage = memoryStorage();
+  const provider = await providerFixture(t), storage = memoryIntentStore();
   const lossy = recordingFetch('after');
   const first = page(t, provider, storage, lossy);
   assert.equal(first.label(), 'Ready');
@@ -162,7 +154,7 @@ async function writeElsewhere(provider, key, input) {
 }
 
 test('shows a conflict and saves again with a new key', async t => {
-  const provider = await providerFixture(t), storage = memoryStorage();
+  const provider = await providerFixture(t), storage = memoryIntentStore();
   assert.equal(await writeElsewhere(provider, 'theirs', {text: 'their text', revision: 0}), 1);
 
   const recorded = recordingFetch();
@@ -205,8 +197,7 @@ test('a blocked record shows Blocked and keeps Save disabled', async t => {
     key: 'old', epoch: 'E1', params: [{text: 'old text', revision: 0}], input: {text: 'old text', revision: 0},
     state: 'blocked', reason: 'epoch', admittedBy: 'earlier-page'
   };
-  const storage = memoryStorage();
-  storage.setItem('elnor-intents:alice', JSON.stringify({format: 1, epoch: 'E1', records: [record]}));
+  const storage = memoryIntentStore(new Map([['elnor-intents:alice', JSON.stringify({format: 1, epoch: 'E1', records: [record]})]]));
   const recorded = recordingFetch();
   // Nothing is sent for a blocked record, so no provider is needed.
   const view = page(t, {url: 'http://127.0.0.1:9'}, storage, recorded);
@@ -216,7 +207,7 @@ test('a blocked record shows Blocked and keeps Save disabled', async t => {
   view.submit();
   await sleep(20);
   assert.equal(recorded.requests.length, 0);
-  assert.equal(JSON.parse(storage.getItem('elnor-intents:alice')).records.length, 1);
+  assert.equal(JSON.parse(storedText(storage, 'elnor-intents:alice')).records.length, 1);
 });
 
 test('the example meets the DX criterion', () => {

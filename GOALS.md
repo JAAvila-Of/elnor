@@ -8,6 +8,10 @@ implementation. Syntax does not need to improve execution speed to justify its
 existence. DX comes first, followed by security and performance; compiler and
 runtime optimization are separate questions.
 
+Elnor's [vision](docs/VISION.md) is to make asynchronous work declarative:
+every operation has an owner, a policy, a lifecycle and a destination, and the
+compiler checks the guarantees that follow from them.
+
 The [capability backlog](docs/mvp/ECOSYSTEM-ROADMAP.md#owner-requested-capability-backlog-dx-throughout)
 keeps future state, schema, development-tool and server capabilities mapped,
 including Server Components and Server Actions. Exceptional DX is required

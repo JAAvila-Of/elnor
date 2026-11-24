@@ -31,6 +31,10 @@ function durableOutcome(view) {
 
 export function createDurableGroup(journal, readOwner, ownerScope) {
   const members = new Map();
+  // The names the group declares. The journal skips outcomes of other members,
+  // such as one renamed in a later release, so they do not hold back the
+  // group's own; the host finds them in journal.outcomes().
+  const names = new Set();
   // What the members show: the record the journal reports for the current
   // owner, or the last terminal one after it was consumed.
   const shown = cell(null);
@@ -86,7 +90,7 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     // An instance whose owner changed or that was disposed while it waited for
     // the lock leaves the outcome to the next one.
     const accept = () => !ownerScope.disposed && untracked(ownerKey) === key && journalOf(member) === hook;
-    hook.consume(view.id, deliver, accept).then(consumed => {
+    hook.consume(view.id, deliver, accept, names).then(consumed => {
       if (failure) reportActionFailure(failure.error);
       settle(view.id, consumed ? value : undefined);
     }, error => {
@@ -103,7 +107,7 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     owner = next;
     settleAll();
     show(null);
-    if (next !== undefined) unwatch = hook.watch(journal, next, view => observe(next, view));
+    if (next !== undefined) unwatch = hook.watch(journal, next, view => observe(next, view), names);
   }
 
   // Watching starts after the component's state exists: on the first read of
@@ -143,6 +147,7 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     if (hook && operation.journal !== hook) throw new TypeError(`The members of the durable group '${journal}' must call operations of one journal`);
     hook = operation.journal;
     members.set(name, {read:readOperation, resume});
+    names.add(name);
 
     // Resolves with the body's return value when this instance consumes the
     // outcome in this page, and with undefined when the call is refused or the

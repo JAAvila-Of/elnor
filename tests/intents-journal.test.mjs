@@ -494,6 +494,31 @@ test('watch reports the record of one owner as it changes', async () => {
   assert.deepEqual(other, [null]);
 });
 
+test('a watch and a consume given the declared members skip outcomes of other members', async () => {
+  const outcome = {status: 'applied', result: {revision: 1}};
+  const storage = seeded([
+    record({key: 'orphan', member: 'old', state: 'terminal', outcome}),
+    record({key: 'mine', state: 'terminal', outcome}),
+    record({key: 'other', owner: '"t2"', member: 'old', state: 'terminal', outcome})
+  ]);
+  const {hook, journal} = setup({storage, start: false});
+  const members = new Set(['save']);
+  const declared = [], all = [], none = [];
+  hook.watch('task-edit', '"t1"', view => declared.push(view?.id ?? null), members);
+  hook.watch('task-edit', '"t1"', view => all.push(view?.id ?? null));
+  hook.watch('task-edit', '"t2"', view => none.push(view?.id ?? null), members);
+  await settle();
+  assert.deepEqual(declared, ['mine']);
+  assert.deepEqual(all, ['orphan'], 'without members every outcome counts');
+  assert.deepEqual(none, [null]);
+  assert.equal(await hook.consume('mine', () => {}), false, 'without members the oldest outcome goes first');
+  assert.equal(await hook.consume('orphan', () => assert.fail('an undeclared member is not delivered'), () => true, members), false);
+  assert.equal(await hook.consume('mine', () => {}, () => true, members), true);
+  await settle();
+  assert.deepEqual(declared, ['mine', null]);
+  assert.deepEqual((await journal.outcomes()).map(item => item.id), ['orphan', 'other']);
+});
+
 test("another store's committed write notifies a started journal", async () => {
   const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
   const observer = setup({storage: memoryIntentStore(values), start: false});

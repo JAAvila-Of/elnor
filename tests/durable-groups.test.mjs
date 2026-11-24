@@ -430,6 +430,27 @@ test('a page that ends between resume and removal resumes once more with late tr
   assert.deepEqual(records(storage), []);
 });
 
+test('an outcome of a member the group no longer declares does not hold back its own outcomes', async t => {
+  const orphan = {
+    format: 1, journal: 'task-edit', scope: 'alice', owner: '"t1"', member: 'old', operation: 'tasks.update', version: 1,
+    key: 'orphan', epoch: 'E1', params: [], input: {id: 't1', title: 'Old'}, state: 'terminal', outcome: {status: 'applied', result: {revision: 1}}, admittedBy: 'earlier-page'
+  };
+  const journal = setup({storage: memoryStorage(JSON.stringify({format: 1, epoch: 'E1', records: [orphan]}))});
+  t.after(() => journal.journal.stop());
+  const view = mount(t, journal);
+  await settle();
+  assert.equal(view.status(), 'idle');
+  view.click('Save A');
+  await settle();
+  assert.equal(view.status(), 'pending');
+  journal.transport.answer(applied(7));
+  await settle();
+  assert.deepEqual(view.log, ['applied:A:false', 'returned:7']);
+  assert.equal(view.status(), 'success');
+  assert.deepEqual(records(journal.storage).map(item => item.key), ['orphan']);
+  assert.deepEqual((await journal.journal.outcomes()).map(item => [item.id, item.member]), [['orphan', 'old']]);
+});
+
 test('a member without parameters or an outcome name resumes its body', async t => {
   const journal = setup();
   t.after(() => journal.journal.stop());

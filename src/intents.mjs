@@ -62,8 +62,12 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   const find = (state, key, phase) => state.unreadable === null ? state.records.find(item => valid(item) && item.key === key && item.state === phase) : undefined;
   const owned = (state, journal, owner) => state.records.filter(item => item?.journal === journal && item?.owner === owner);
   // The record an owner's members observe: a blocked or unreadable one first,
-  // then the pending one, then the oldest terminal one.
-  const observed = records => records.find(item => !valid(item) || item.state === 'blocked') ?? records.find(item => item.state === 'pending') ?? records.find(item => item.state === 'terminal');
+  // then the pending one, then the oldest terminal one. Given the member names
+  // a group declares, outcomes of other members, such as a renamed one, are
+  // left for the host and do not hide the group's own.
+  const declared = (item, members) => members === undefined || members.has(item.member);
+  const oldestOutcome = (records, members) => records.find(item => valid(item) && item.state === 'terminal' && declared(item, members));
+  const observed = (records, members) => records.find(item => !valid(item) || item.state === 'blocked') ?? records.find(item => item.state === 'pending') ?? oldestOutcome(records, members);
   const outcomeOf = record => ({...record.outcome, late: record.admittedBy !== instance});
   const view = item => {
     if (!valid(item)) return {id: corruptId(JSON.stringify(item)), member: '', state: 'blocked', params: []};
@@ -75,7 +79,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
     let current = null;
     if (state.unreadable !== null) current = {id: corruptId(state.unreadable), member: '', state: 'blocked', params: []};
     else {
-      const item = observed(owned(state, watcher.journal, watcher.owner));
+      const item = observed(owned(state, watcher.journal, watcher.owner), watcher.members);
       if (item !== undefined) current = view(item);
     }
     const text = JSON.stringify(current);
@@ -226,8 +230,10 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   };
 
   const hook = {
-    watch(journal, owner, listener) {
-      const watcher = {journal, owner, listener, last: undefined};
+    // `members`, when given, is the set of member names the watching group
+    // declares; it may grow while the watch lasts.
+    watch(journal, owner, listener, members) {
+      const watcher = {journal, owner, listener, members, last: undefined};
       watchers.add(watcher);
       refresh();
       return () => { watchers.delete(watcher); };
@@ -260,11 +266,12 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       if (key !== undefined) drive(key);
       return key;
     },
-    consume(id, deliver, accept = () => true) {
+    consume(id, deliver, accept = () => true, members) {
       return exclusive(async () => {
         const state = await read(), record = find(state, id, 'terminal');
-        // The outcomes of one owner are consumed in admission order.
-        if (!record || owned(state, record.journal, record.owner).find(item => valid(item) && item.state === 'terminal') !== record) return false;
+        // The outcomes of one owner are consumed in admission order, among
+        // those of the declared members when they are given.
+        if (!record || oldestOutcome(owned(state, record.journal, record.owner), members) !== record) return false;
         // A consumer that stopped watching the owner while it waited for the
         // lock leaves the record for the next one.
         if (!accept()) return false;

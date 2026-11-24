@@ -36,6 +36,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   if (!positive(retry.firstMs) || !positive(retry.maxMs) || retry.firstMs > retry.maxMs) {
     throw new TypeError('A journal retry needs positive finite firstMs and maxMs, with firstMs at most maxMs');
   }
+  // The journal closes a store it created when it stops; a store the host
+  // passed is the host's to close.
+  const ownStore = store === undefined || store === null;
   store ??= indexedDbIntentStore();
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
@@ -164,6 +167,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
         } catch {
           answer = {kind: 'retry'};
         }
+        // A request that stop aborted has nothing to record, so it does not
+        // open the store again.
+        if (controller.signal.aborted && answer?.kind === 'retry') return;
         const next = await exclusive(async () => {
           const state = await read(), current = find(state, key, 'pending');
           if (!current) {
@@ -342,6 +348,7 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       clearTimeout(reconcileTimer);
       reconcileTimer = undefined;
       reconcileAttempt = 0;
+      if (ownStore) store.close();
     },
     async outcomes() {
       const state = await read();
@@ -399,36 +406,41 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
   const listeners = new Set();
   let opening, port;
   // The connection opens on first use. When another page upgrades or deletes
-  // the database, it is closed and the next call opens it again. An open that
-  // another connection blocks, or that takes longer than openTimeoutMs,
-  // rejects, so that it cannot hold the scope's lock in every tab; a
-  // connection that opens after that is closed.
-  const open = () => opening ??= new Promise((resolve, reject) => {
-    let settled = false;
-    const fail = error => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
-    };
-    const timer = setTimeout(() => fail(new DOMException('Opening the intent database took too long', 'TimeoutError')), openTimeoutMs);
-    const request = factory.open(name, 1);
-    request.onupgradeneeded = () => { request.result.createObjectStore(objectStore); };
-    request.onblocked = () => fail(new DOMException('Opening the intent database is blocked by another connection', 'InvalidStateError'));
-    request.onsuccess = () => {
-      const database = request.result;
-      if (settled) return database.close();
-      settled = true;
-      clearTimeout(timer);
-      database.onversionchange = () => { database.close(); opening = undefined; };
-      database.onclose = () => { opening = undefined; };
-      resolve(database);
-    };
-    request.onerror = () => fail(request.error);
-  }).catch(error => {
-    opening = undefined;
-    throw error;
-  });
+  // the database, or close() is called, it is closed and the next call opens
+  // it again. An open that another connection blocks, or that takes longer
+  // than openTimeoutMs, rejects, so that it cannot hold the scope's lock in
+  // every tab; a connection that opens after that is closed.
+  const open = () => {
+    if (opening) return opening;
+    const forget = () => { if (opening === attempt) opening = undefined; };
+    const attempt = new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      };
+      const timer = setTimeout(() => fail(new DOMException('Opening the intent database took too long', 'TimeoutError')), openTimeoutMs);
+      const request = factory.open(name, 1);
+      request.onupgradeneeded = () => { request.result.createObjectStore(objectStore); };
+      request.onblocked = () => fail(new DOMException('Opening the intent database is blocked by another connection', 'InvalidStateError'));
+      request.onsuccess = () => {
+        const database = request.result;
+        if (settled) return database.close();
+        settled = true;
+        clearTimeout(timer);
+        database.onversionchange = () => { database.close(); forget(); };
+        database.onclose = forget;
+        resolve(database);
+      };
+      request.onerror = () => fail(request.error);
+    }).catch(error => {
+      forget();
+      throw error;
+    });
+    return opening = attempt;
+  };
   const run = async (mode, operate) => {
     const database = await open();
     return new Promise((resolve, reject) => {
@@ -463,6 +475,16 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
     async remove(key) {
       await run('readwrite', journals => journals.delete(key));
       announce(key);
+    },
+    // Closes the connection once its transactions finish, and the channel.
+    // A later call opens the database again.
+    close() {
+      const current = opening;
+      opening = undefined;
+      current?.then(database => database.close(), () => {});
+      listeners.clear();
+      port?.close();
+      port = undefined;
     },
     subscribe(listener) {
       if (!port) {

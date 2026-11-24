@@ -927,6 +927,49 @@ test('opening the IndexedDB store rejects when it is blocked or takes 10 seconds
   assert.equal(await other.read(storageKey), null);
 });
 
+test('stop closes the store the journal created, but not one the host passed', async t => {
+  const factory = fakeIndexedDB();
+  globalThis.indexedDB = factory;
+  t.after(() => { delete globalThis.indexedDB; });
+  const transport = scriptedTransport();
+  const own = createIntentJournal({scope: 'alice', locks: serialLocks(), createKey: keys()});
+  const hook = own.operation('tasks.update', {version: 1, transport})[durable].journal;
+  own.start();
+  assert.equal(await hook.admit(entry()), 'k1');
+  await until(() => transport.requests.length === 1, 'the request');
+  own.stop();
+  await settle();
+  assert.equal(factory.closed, 1, 'the connection is closed');
+  assert.equal(factory.opened.length, 1, 'the aborted request opens nothing again');
+  // A journal started again opens the store again.
+  own.start();
+  await until(() => transport.requests.length === 2, 'the request after the restart');
+  assert.equal(factory.opened.length, 2);
+  own.stop();
+  await settle();
+  assert.equal(factory.closed, 2);
+
+  const hosted = fakeIndexedDB(), channels = [];
+  const store = indexedDbIntentStore({indexedDB: hosted, channel: () => {
+    const opened = new BroadcastChannel('elnor-intents-close-test');
+    channels.push(opened);
+    return opened;
+  }});
+  t.after(() => { for (const opened of channels) opened.close(); });
+  const host = setup({storage: store, start: false});
+  host.journal.start();
+  assert.equal(await host.hook.admit(entry()), 'k1');
+  await until(() => host.transport.requests.length === 1, 'the request of the host store');
+  host.journal.stop();
+  await settle();
+  assert.equal(hosted.closed, 0, 'a store the host passed stays open');
+  store.close();
+  await settle();
+  assert.equal(hosted.closed, 1, 'the host closes its own store');
+  assert.equal(JSON.parse(await store.read(storageKey)).records[0].key, 'k1', 'a closed store opens again on use');
+  assert.equal(hosted.opened.length, 2);
+});
+
 test('the IndexedDB store commits before it resolves and tells the other tabs', async t => {
   const factory = fakeIndexedDB(), channels = [];
   const channel = () => {

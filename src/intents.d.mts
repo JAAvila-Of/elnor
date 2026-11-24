@@ -92,6 +92,11 @@ export interface IntentStore {
   write(key: string, text: string): Promise<void>;
   remove(key: string): Promise<void>;
   subscribe(listener: (key: string) => void): () => void;
+  /**
+   * Releases the store's connection; a later call opens it again. A journal calls it on `stop`
+   * only for the store it created by default; the host closes a store it passed.
+   */
+  close?(): void;
 }
 
 export interface IndexedDbIntentStoreOptions {
@@ -104,7 +109,7 @@ export interface IndexedDbIntentStoreOptions {
 }
 
 /** The IndexedDB intent store, coherent across tabs. Throws a TypeError when IndexedDB is not available. */
-export function indexedDbIntentStore(options?: IndexedDbIntentStoreOptions): IntentStore;
+export function indexedDbIntentStore(options?: IndexedDbIntentStoreOptions): IntentStore & {close(): void};
 
 export interface IntentJournalOptions {
   /** Defaults to `indexedDbIntentStore()`. */
@@ -126,7 +131,7 @@ export interface IntentJournal {
   operation<I, R, E>(name: string, config: {version: number; transport: IntentTransport}): DurableOperation<I, R, E>;
   /** Reconciles every stored intent of the scope, again when the browser reports a connection. */
   start(): void;
-  /** Aborts the requests in flight and sends nothing more until `start`. */
+  /** Aborts the requests in flight and sends nothing more until `start`. Closes the store the journal created by default. */
   stop(): void;
   /** Resolves to the terminal records that no member consumed: `await journal.outcomes()`. Rejects when the store cannot be read. */
   outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;

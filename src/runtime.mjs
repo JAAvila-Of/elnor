@@ -7,11 +7,12 @@ const nativeCleanup=Symbol('nativeCleanup'), bulkSafe=Symbol('bulkSafe');
 let detachedByRegion=0;
 function ownNative(owner,cleanup,safe){owner?.own(cleanup,nativeCleanup,safe);}
 function detach(node){if(!detachedByRegion)node.remove();}
+// Every scope disposal runs this, so it allocates nothing unless a callback fails.
 function cleanAll(callbacks){
-  const errors=[];
-  for(const callback of callbacks){try{callback();}catch(error){errors.push(error);}}
-  if(errors.length===1)throw errors[0];
-  if(errors.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
+  let errors;
+  for(let i=0;i<callbacks.length;i++){const callback=callbacks[i];try{callback();}catch(error){(errors??=[]).push(error);}}
+  if(errors?.length===1)throw errors[0];
+  if(errors?.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
 }
 function failWithCleanup(error,cleanup,message='Mount failed and resource cleanup also failed'){
   try{cleanup();}catch(cleanupError){
@@ -483,6 +484,8 @@ class Scope{
   }
 }
 export function scope(){return new Scope();}
+function unsubscribe(subscribers){subscribers.delete(this);}
+const stoppedDeps=new Set();
 class Reaction{
   constructor(fn){this.deps=new Set();this.disposed=false;this.fn=fn;}
   run(){
@@ -492,7 +495,11 @@ class Reaction{
     const fn=this.fn;try{fn();}finally{current=prev;}
     if(this.deps.size===0)this.fn=null;
   }
-  stop(){this.disposed=true;pending.delete(this);for(const dep of this.deps)dep.delete(this);this.deps.clear();this.fn=null;}
+  // forEach with a shared callback avoids an iterator per stopped reaction, and
+  // the shared empty set avoids the new table Set.prototype.clear allocates.
+  // A stopped reaction never runs again and cells skip disposed readers, so
+  // nothing is ever added to stoppedDeps.
+  stop(){this.disposed=true;if(pending.size!==0)pending.delete(this);this.deps.forEach(unsubscribe,this);this.deps=stoppedDeps;this.fn=null;}
 }
 export function effect(fn, owner){
   const e=new Reaction(fn),dispose=()=>e.stop();
@@ -752,12 +759,15 @@ function orderedRows(rows){
 // arbitrary user disposers must still observe ordinary per-row teardown.
 function canClearRegion(parent,end,rows){
   if(end.parentNode!==parent)return false;
-  let count=1;
-  for(const row of rows.values()){
-    if(!row.owner[bulkSafe])return false;
-    for(const node of row.nodes){if(node.parentNode!==parent)return false;count++;}
-  }
-  return parent.childNodes.length===count;
+  // Map.prototype.forEach avoids an iterator result per row.
+  let count=1,eligible=true;
+  rows.forEach(row=>{
+    if(!eligible)return;
+    if(!row.owner[bulkSafe]){eligible=false;return;}
+    const nodes=row.nodes;
+    for(let i=0;i<nodes.length;i++){if(nodes[i].parentNode!==parent){eligible=false;return;}count++;}
+  });
+  return eligible&&parent.childNodes.length===count;
 }
 function clearRegion(parent,end,rows,suppressDescendants=true){
   if(suppressDescendants)detachedByRegion++;
@@ -765,10 +775,10 @@ function clearRegion(parent,end,rows,suppressDescendants=true){
   try{
     // Eligibility already proves that every cleanup is runtime-owned. Release
     // all owners directly; per-row DOM callbacks would only be suppressed here.
-    const errors=[];
-    for(const row of rows.values()){try{row.owner.dispose();}catch(error){errors.push(error);}}
-    if(errors.length===1)throw errors[0];
-    if(errors.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
+    let errors;
+    rows.forEach(row=>{try{row.owner.dispose();}catch(error){(errors??=[]).push(error);}});
+    if(errors?.length===1)throw errors[0];
+    if(errors?.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
   }
   catch(error){cleanupFailed=true;cleanupError=error;}
   finally{if(suppressDescendants)detachedByRegion--;}

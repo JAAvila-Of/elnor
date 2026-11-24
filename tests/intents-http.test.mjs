@@ -235,8 +235,14 @@ test('the transport maps answers and sends the documented request', async () => 
   assert.deepEqual(await map(403, {error: 'csrf'}), {kind: 'scope-refused'});
   assert.deepEqual(await map(403, {status: 'scope-refused', ...echo, scope: 'bob'}), {kind: 'scope-refused'});
   assert.deepEqual(await map(409, '<html>Conflict</html>'), {kind: 'retry'});
-  assert.deepEqual(await map(409, {status: 'key-conflict', ...echo, key: 'other'}), {kind: 'retry'});
+  assert.deepEqual(await map(409, {error: 'conflict'}), {kind: 'retry'});
   assert.deepEqual(await map(409, {status: 'busy', ...echo}), {kind: 'retry'});
+  // A protocol 409 that echoes another intent may come from an endpoint that
+  // applied it under another identity, as a 200 with a wrong echo may.
+  assert.deepEqual(await map(409, {status: 'key-conflict', ...echo, key: 'other'}), {kind: 'mismatch'});
+  assert.deepEqual(await map(409, {status: 'key-conflict', ...echo, scope: 'bob'}), {kind: 'mismatch'});
+  assert.deepEqual(await map(409, {status: 'key-conflict', ...echo, epoch: 'E9'}), {kind: 'mismatch'});
+  assert.deepEqual(await map(409, {status: 'key-conflict', scope: 'alice', key: 'a b'}), {kind: 'mismatch'});
   for (const status of [404, 500, 503]) assert.deepEqual(await map(status, {status: 'x'}), {kind: 'retry'});
   assert.deepEqual(await map(200, {status: 'surprise', ...echo}), {kind: 'retry'});
   const failing = httpIntentTransport({baseUrl: 'http://x.test', fetch: async () => { throw new TypeError('network'); }});

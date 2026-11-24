@@ -446,7 +446,9 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
 // every request. Answers outside the protocol, network failures, 404 and 5xx
 // leave the intent pending, and any 403 pauses the scope. A 200, 412 or 422
 // whose body is not JSON or echoes another scope, key or epoch blocks it,
-// because an endpoint outside the protocol may have applied it.
+// because an endpoint outside the protocol may have applied it, and so does a
+// 409 with the protocol's key-conflict body and another echo. A 409 without
+// that body leaves the intent pending.
 export function httpIntentTransport({baseUrl, fetch: send = globalThis.fetch, headers = () => ({})} = {}) {
   if (typeof baseUrl !== 'string' || !baseUrl) throw new TypeError('An HTTP transport needs a base URL');
   const base = baseUrl.replace(/\/+$/, '');
@@ -473,10 +475,14 @@ function mapResponse(status, body, {scope, key, epoch}) {
   // expired session, which refuse the session as the provider's does: a
   // valid intent is not blocked because the session changed under it.
   if (status === 403) return {kind: 'scope-refused'};
-  const echoed = !!body && typeof body === 'object' && !Array.isArray(body) && body.scope === scope && body.key === key;
-  // A 409 names a key conflict only with the protocol's body; any other 409
-  // applied nothing.
-  if (status === 409) return echoed && body.status === 'key-conflict' ? {kind: 'key-conflict'} : {kind: 'retry'};
+  const object = !!body && typeof body === 'object' && !Array.isArray(body);
+  const echoed = object && body.scope === scope && body.key === key;
+  // A 409 without the protocol's body applied nothing. One with it that echoes
+  // another scope, key or epoch blocks, as a 200 with a wrong echo does.
+  if (status === 409) {
+    if (!object || body.status !== 'key-conflict') return {kind: 'retry'};
+    return echoed && body.epoch === epoch ? {kind: 'key-conflict'} : {kind: 'mismatch'};
+  }
   if (![200, 412, 422].includes(status)) return {kind: 'retry'};
   if (!echoed) return {kind: 'mismatch'};
   const state = body.status;

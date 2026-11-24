@@ -64,10 +64,13 @@ the way Elm rules out runtime exceptions:
 - a write that should survive a reload is not durable.
 
 Diagnostics are warnings unless a construct is unsound, and they suggest the
-declaration that fixes the problem. Two exist: an action group owner that is
-an object is compared by identity, and a write to state after an `await`
-outside a group may apply a stale result. The second one found two real races
-in the repository's own `UserEditor` example.
+declaration that fixes the problem. Three exist: an action group owner that
+is an object is compared by identity; a write to state after an `await`
+outside a group may apply a stale result; and an interval, listener,
+subscription, connection or observer that nothing releases
+[outlives its component](mvp/COMPONENT-DISPOSAL.md#work-that-outlives-the-component).
+The stale write warning found two real races in the repository's own
+`UserEditor` example.
 
 ## What Elnor does not compete on
 
@@ -97,6 +100,6 @@ the verified guarantees, as it already does for the experimental hot update.
 ## Next steps
 
 1. More compiler diagnostics for the guarantees in part 3, after the stale
-   write warning.
+   write and unowned work warnings.
 2. A design for durable intents, including identity, retries, reconciliation
    and conflicts, before any implementation.

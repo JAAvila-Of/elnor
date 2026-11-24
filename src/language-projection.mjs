@@ -94,6 +94,10 @@ export function projectSurface(source, filename) {
   // Generated offsets of component bindings and of async actions outside a
   // group, for the stale write warning.
   const bindingOffsets = [], staleWriteChecks = [];
+  // Generated offsets of each action's name and function, and of the disposal
+  // expression, for the unowned work warning.
+  const actionOffsets = [];
+  let disposalOffset = -1;
   if (ir.header) {
     let cursor = ir.headerSpan.start;
     for (const imp of ir.imports.filter(i => i.path.endsWith('.eln'))) {
@@ -150,15 +154,18 @@ export function projectSurface(source, filename) {
   const managed = managedActionNames(ir);
   for (const action of ir.actions) {
     const implementation = managed.get(action.name);
+    const offsets = {name: -1, body: -1};
+    actionOffsets.push(offsets);
     if (implementation) {
-      g('const '); c(action.nameSpan); g(` = {} as ${managedActionType(implementation)};\n`);
+      g('const '); offsets.name = map.source.length; c(action.nameSpan); g(` = {} as ${managedActionType(implementation)};\n`);
     }
     // A member sees its own group with the signal of its invocation.
     const shadowed = implementation && groups.has(action.group);
     if (shadowed) g(`const ${implementation} = (() => { const ${action.group} = {} as ${memberGroupType}; return `);
     if (action.async && !action.groupSpan) staleWriteChecks.push(map.source.length);
+    offsets.body = map.source.length;
     g(action.async ? 'async function ' : 'function ');
-    if (implementation) g(implementation); else c(action.nameSpan);
+    if (implementation) g(implementation); else { offsets.name = map.source.length; c(action.nameSpan); }
     g('('); c(action.paramsSpan); g(') {');
     if(action.bodySegments){
       guardChecks.push(...guardCallChecks(action,map.source.length));
@@ -169,7 +176,7 @@ export function projectSurface(source, filename) {
     }else c(action.bodySpan);
     g(shadowed ? '}; })();\n' : '}\n');
   }
-  if(ir.disposal){g('(() => { ((__elnor_result: void) => {})(');c(ir.disposal.exprSpan);g('); });\n');}
+  if(ir.disposal){g('(() => { ((__elnor_result: void) => {})(');disposalOffset=map.source.length;c(ir.disposal.exprSpan);g('); });\n');}
   function nodes(items) {
     for (const node of items) {
       for(const key of ['ariaPressed','ariaCurrent'])if(node[key+'Span']){g('((__elnor_aria: boolean) => {})((');property(node[key+'Span']);g('));\n');}
@@ -232,5 +239,5 @@ export function projectSurface(source, filename) {
   g('}, __slots?: {');
   for (const slot of ir.slots) g(`${slot}?: () => void;`);
   g('}): void {}\n');
-  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks};
+  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks, actionOffsets, disposalOffset};
 }

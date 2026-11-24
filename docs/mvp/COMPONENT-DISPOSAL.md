@@ -78,6 +78,72 @@ abort-before-stop wrapper. Remaining friction is the per-action generation,
 controller and try/catch/finally code. Further operation ergonomics must preserve
 the distinction between invocation policy and component lifetime.
 
+## Work that outlives the component
+
+Some work has no end of its own. An interval keeps calling its callback, a
+listener stays registered, and a subscription, connection or observer stays
+open until something releases it. The editor warns with `ELN-UNOWNED-WORK`
+when a component starts such work and nothing releases it, so it would keep
+running after the component unmounts.
+
+```surface
+component Clock() {
+  state count = 0;
+  state timer: ReturnType<typeof setInterval> | undefined = undefined;
+  on dispose() => stop()
+
+  action start() { timer = setInterval(() => count++, 1000); }
+  action stop() { clearInterval(timer); timer = undefined; }
+
+  ui {
+    section {
+      p count
+      button "Start" => start()
+    }
+  }
+}
+```
+
+Without the `on dispose` line, `setInterval` is reported. A `stop` action that
+only a button calls does not count, because unmounting does not press it. The
+warning covers:
+
+- `setInterval`;
+- `addEventListener`;
+- `WebSocket`, `EventSource`, `BroadcastChannel`, `Worker` and `SharedWorker`;
+- `ResizeObserver`, `MutationObserver`, `IntersectionObserver` and
+  `PerformanceObserver`;
+- a call that receives a callback and returns a stopper, a function without
+  parameters or properties that returns nothing, such as
+  `feed.subscribe(id, listener)`;
+- a call that returns a value with `Symbol.dispose`.
+
+The browser APIs must come from the default library, so a local function
+named `setInterval` is not reported. The work counts as released when:
+
+- its handle is kept in a prop, state or calc that the disposal hook releases.
+  The hook releases a binding when it passes it to a call, calls it, or calls
+  a method on it, directly or through the actions it calls;
+- its handle is kept in a local that the code uses again;
+- its handle leaves the code that started it: it is returned, passed to a call
+  or stored in a property;
+- a listener receives a `signal`, unless that signal is the `signal` of a
+  component binding that the hook does not release;
+- the hook removes the same listener, with the same target, event name and
+  handler.
+
+Work started by an action group member is reported in the same way. Retiring
+an invocation aborts its `signal` and unwinds its `await`, but it does not
+clear an interval or remove a listener that the member started.
+
+`setTimeout`, `requestAnimationFrame` and single requests end by themselves
+and are not reported. A timeout that reschedules itself is therefore not
+covered. The check does not follow handles through objects or arrays, does not
+know whether a release runs on every path, and does not report an interval
+that a second call replaces while the first one still runs. A
+`{once: true}` listener is reported, because the event may never come. The
+warning does not block a check or a build.
+
 ## Architecture, fallback and Svelte contrast
 
 Registration lowers to the existing `owner.own` mechanism. Both runtime source

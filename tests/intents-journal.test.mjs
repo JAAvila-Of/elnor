@@ -611,6 +611,29 @@ test('a watch and a consume given the declared members skip outcomes of other me
   assert.deepEqual((await journal.outcomes()).map(item => item.id), ['orphan', 'other']);
 });
 
+test('a watch and a consume skip outcomes of another operation version, which stay for the host', async () => {
+  const outcome = {status: 'applied', result: {revision: 1}};
+  const storage = seeded([
+    record({key: 'older', state: 'terminal', outcome}),
+    record({key: 'unknown', operation: 'tasks.archive', state: 'terminal', outcome}),
+    record({key: 'mine', version: 2, state: 'terminal', outcome})
+  ]);
+  const {hook, journal} = setup({storage, version: 2, start: false});
+  const members = new Set(['save']);
+  const declared = [], all = [];
+  hook.watch('task-edit', '"t1"', view => declared.push(view?.id ?? null), members);
+  hook.watch('task-edit', '"t1"', view => all.push(view?.id ?? null));
+  await settle();
+  assert.deepEqual(declared, ['mine']);
+  assert.deepEqual(all, ['mine']);
+  assert.equal(await hook.consume('older', () => assert.fail('an outcome of another release is not delivered'), () => true, members), false);
+  assert.equal(await hook.consume('unknown', () => assert.fail('an outcome of an unknown operation is not delivered')), false);
+  assert.equal(await hook.consume('mine', () => {}, () => true, members), true);
+  await settle();
+  assert.deepEqual(declared, ['mine', null]);
+  assert.deepEqual((await journal.outcomes()).map(item => item.id), ['older', 'unknown']);
+});
+
 test("another store's committed write notifies a started journal", async () => {
   const values = new Map([[storageKey, JSON.stringify({format: 1, epoch: 'E1', records: []})]]);
   const observer = setup({storage: memoryIntentStore(values), start: false});

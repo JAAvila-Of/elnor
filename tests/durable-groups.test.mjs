@@ -150,10 +150,10 @@ function manualTransport() {
   };
 }
 
-function setup({storage = memoryStorage(), locks = serialLocks(), transport = manualTransport()} = {}) {
+function setup({storage = memoryStorage(), locks = serialLocks(), transport = manualTransport(), version = 1} = {}) {
   const journal = createIntentJournal({store: storage, scope: 'alice', locks});
-  const update = journal.operation('tasks.update', {version: 1, transport});
-  const touch = journal.operation('tasks.touch', {version: 1, transport});
+  const update = journal.operation('tasks.update', {version, transport});
+  const touch = journal.operation('tasks.touch', {version, transport});
   journal.start();
   return {storage, locks, transport, journal, update, touch};
 }
@@ -449,6 +449,29 @@ test('an outcome of a member the group no longer declares does not hold back its
   assert.equal(view.status(), 'success');
   assert.deepEqual(records(journal.storage).map(item => item.key), ['orphan']);
   assert.deepEqual((await journal.journal.outcomes()).map(item => [item.id, item.member]), [['orphan', 'old']]);
+});
+
+test('an outcome of another release is not resumed and does not hold back the outcome of this one', async t => {
+  const older = {
+    format: 1, journal: 'task-edit', scope: 'alice', owner: '"t1"', member: 'save', operation: 'tasks.update', version: 1,
+    key: 'older', epoch: 'E1', params: [{id: 't1', title: 'Old'}], input: {id: 't1', title: 'Old'}, state: 'terminal',
+    outcome: {status: 'applied', result: {revision: 1}}, admittedBy: 'earlier-page'
+  };
+  const journal = setup({storage: memoryStorage(JSON.stringify({format: 1, epoch: 'E1', records: [older]})), version: 2});
+  t.after(() => journal.journal.stop());
+  const view = mount(t, journal);
+  await settle();
+  assert.equal(view.status(), 'idle');
+  assert.deepEqual(view.log, [], 'the body of this release does not run with the parameters of another');
+  view.click('Save A');
+  await settle();
+  assert.equal(view.status(), 'pending');
+  journal.transport.answer(applied(7));
+  await settle();
+  assert.deepEqual(view.log, ['applied:A:false', 'returned:7']);
+  assert.equal(view.status(), 'success');
+  assert.deepEqual(records(journal.storage).map(item => item.key), ['older']);
+  assert.deepEqual((await journal.journal.outcomes()).map(item => item.id), ['older']);
 });
 
 test('a member without parameters or an outcome name resumes its body', async t => {

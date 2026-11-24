@@ -243,11 +243,20 @@ A terminal record never expires. It stays until a member consumes it or the
 host acknowledges it, so no outcome disappears unreported.
 
 A group watches and consumes only the terminal records of the members it
-declares. A terminal record of another member, for instance one that an older
-release of the component admitted, does not stop the group's own later
-outcomes from being consumed and resumed; it stays for `journal.outcomes()`.
-A pending or blocked record of such a member still holds the owner, so the
-group admits no new intent for that owner until the host resolves it.
+declares and of the operation versions its journal registered. A terminal
+record of another member, for instance one that an older release of the
+component admitted, does not stop the group's own later outcomes from being
+consumed and resumed; it stays for `journal.outcomes()`. The same holds for
+a terminal record of another operation version, including one that became
+terminal by the rule below after a newer release blocked it: the body of one
+release never resumes with the parameters and result of another.
+
+A pending or blocked record of an undeclared member still holds the owner, so
+the group admits no new intent for that owner meanwhile. A blocked one holds
+it until the host discards it. A pending one holds it until the provider
+decides it, which makes it terminal; the host cannot discard a pending record,
+and the only call that removes one is `journal.forget()`, which removes every
+record of the scope.
 
 An answer that arrives for a record that another tab has meanwhile blocked
 because its operation version changed (reason `version`) is still the
@@ -273,7 +282,9 @@ higher, or whose operation the journal does not know, was admitted by a newer
 release in another tab during a rolling deploy: it stays pending and unsent in
 this journal, so a tab running the newer release sends it, and until then its
 owner admits no new intent. `blocked()` does not list it; it waits for a
-release that knows it.
+release that knows it. A terminal record of an operation version other than
+the registered one is not resumed by any member of this release: it does not
+hold back the owner's outcomes and stays for `journal.outcomes()`.
 
 ## Host
 

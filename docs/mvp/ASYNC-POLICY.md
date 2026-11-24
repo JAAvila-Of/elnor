@@ -446,13 +446,16 @@ with `late` true. The rest of the body can therefore run more than once per
 intent, but not concurrently.
 
 A group watches and consumes only the terminal records of the members it
-declares. A terminal record of another member stays for `journal.outcomes()`
-and does not stop the group's own outcomes from being consumed, while a
-pending or blocked record of such a member still holds the owner. An answer
-from the provider that arrives for a record another tab has meanwhile blocked
-with reason `version` makes the record terminal when it is `applied`,
-`rejected` or `unavailable` with a matching echo, because the provider decided
-it.
+declares and of the operation versions its journal registered. A terminal
+record of another member or of another operation version stays for
+`journal.outcomes()` and does not stop the group's own outcomes from being
+consumed, so the body of one release never resumes with the parameters and
+result of another. A pending or blocked record of another member still holds
+the owner. An answer from the provider that arrives for a record another tab
+has meanwhile blocked with reason `version` makes the record terminal when it
+is `applied`, `rejected` or `unavailable` with a matching echo, because the
+provider decided it; that outcome keeps the older version, so the newer
+release leaves it for `journal.outcomes()`.
 
 An owner change or an unmount does not retire an intent. It keeps being sent,
 and a component that mounts the same group with the same owner observes it.
@@ -539,7 +542,8 @@ journal.start();
   is never sent with another input shape. A record of an older version than
   the journal's is blocked. A record of a newer version, or of an operation
   the journal does not know, stays pending and unsent, so that a tab running
-  the newer release sends it; `blocked()` does not list it.
+  the newer release sends it; `blocked()` does not list it. A terminal
+  record of another version is not resumed and stays for `outcomes()`.
 - Storage that fails at admission refuses the call and sends nothing.
 
 The journal and the transport are tested in

@@ -69,9 +69,11 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   // The record an owner's members observe: a blocked or unreadable one first,
   // then the pending one, then the oldest terminal one. Given the member names
   // a group declares, outcomes of other members, such as a renamed one, are
-  // left for the host and do not hide the group's own.
+  // left for the host and do not hide the group's own. So are outcomes of an
+  // operation version this journal did not register: the body of one release
+  // never resumes with the parameters and result of another.
   const declared = (item, members) => members === undefined || members.has(item.member);
-  const oldestOutcome = (records, members) => records.find(item => valid(item) && item.state === 'terminal' && declared(item, members));
+  const oldestOutcome = (records, members) => records.find(item => valid(item) && item.state === 'terminal' && sendable(item) && declared(item, members));
   const observed = (records, members) => records.find(item => !valid(item) || item.state === 'blocked') ?? records.find(item => item.state === 'pending') ?? oldestOutcome(records, members);
   const outcomeOf = record => ({...record.outcome, late: record.admittedBy !== instance});
   const view = item => {

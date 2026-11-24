@@ -133,7 +133,12 @@ export interface IntentJournal {
   start(): void;
   /** Aborts the requests in flight and sends nothing more until `start`. Closes the store the journal created by default. */
   stop(): void;
-  /** Resolves to the terminal records that no member consumed: `await journal.outcomes()`. Rejects when the store cannot be read. */
+  /**
+   * Resolves to the terminal records that no member consumed: `await journal.outcomes()`. They include
+   * the outcomes that no group of this release consumes: those of a member a group does not declare, and
+   * those of an operation version other than the one this journal registered. Rejects when the store
+   * cannot be read.
+   */
   outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
   /** Resolves to the records that cannot be sent: `await journal.blocked()`. Rejects when the store cannot be read. */
   blocked(): Promise<ReadonlyArray<BlockedRecord>>;

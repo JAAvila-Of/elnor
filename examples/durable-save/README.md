@@ -156,5 +156,7 @@ the provider refuses the session's account.
   operation, or knows an older version of it, leaves the records that the
   newer tab admitted pending and unsent until a tab with the newer release
   sends them. A record of an older version than the journal's is blocked.
+  An outcome of another version is not resumed by this view: it stays in
+  `journal.outcomes()` for the host and does not hold back the next one.
 - Browser storage clearing, real authentication and production retention are
   outside this fixture.

@@ -242,6 +242,23 @@ the body may therefore run more than once per intent, but never concurrently.
 A terminal record never expires. It stays until a member consumes it or the
 host acknowledges it, so no outcome disappears unreported.
 
+A group watches and consumes only the terminal records of the members it
+declares. A terminal record of another member, for instance one that an older
+release of the component admitted, does not stop the group's own later
+outcomes from being consumed and resumed; it stays for `journal.outcomes()`.
+A pending or blocked record of such a member still holds the owner, so the
+group admits no new intent for that owner until the host resolves it.
+
+An answer that arrives for a record that another tab has meanwhile blocked
+because its operation version changed (reason `version`) is still the
+provider's decision. When it is an `applied`, `rejected` or `unavailable`
+answer with a matching echo, the record becomes terminal with that outcome
+instead of staying blocked.
+
+Before the journal's first read the member reports `idle`. A call made then is
+still checked against storage, so no write is lost because the status had not
+loaded yet.
+
 ### Persisted identity
 
 A record stores a format version, the journal name, the scope, the owner, the
@@ -282,20 +299,29 @@ The compiler recognizes durable operations by their type from that module.
   browser to flush the write to disk before it completes, so the journal
   stores an intent that way before the request is sent; a browser without
   that option uses its default. A forced crash of the browser or of the
-  operating system with a pending intent has not been tested. Other tabs hear of each change through a
-  `BroadcastChannel` and update what their components show. localStorage was
-  rejected because it is not coherent across tabs: in headless Edge, two tabs
-  of one profile each made 200 increments of one localStorage value, every one
-  inside the same Web Lock, and three runs ended at 399, 398 and 347 instead
-  of 400, while one tab alone always reached 400. A tab holding the lock could
-  read a value from before the previous holder's write, and one run of the
-  example resumed the same outcome in both tabs.
+  operating system with a pending intent has not been tested. Other tabs hear
+  of each change through a `BroadcastChannel` and update what their components
+  show. localStorage was rejected because it is not coherent across tabs. In
+  one diagnostic in headless Edge, two tabs of one profile each made 200
+  increments of one localStorage value, every one inside the same Web Lock,
+  and three runs ended at 399, 398 and 347 instead of 400, while one tab alone
+  always reached 400. A tab holding the lock could read a value from before
+  the previous holder's write, and one run of the example resumed the same
+  outcome in both tabs. The loss reported under Acceptance comes from a later
+  test with other counts and runs, so the two sets of figures are not
+  comparable.
 - `scope` partitions the storage by account. The journal only reads and sends
   intents of its scope. The host calls `journal.stop()` before the session
-  ends or changes; it aborts requests in flight and sends nothing more. A
-  login as another account creates another journal. A host that must not
-  leave the scope's records on the device calls `await journal.forget()`,
-  which removes them all, including writes that were never sent.
+  ends or changes; it aborts requests in flight and sends nothing more, and
+  it closes the IndexedDB connection of a store the journal created by
+  default. A store that the host passed in is the host's to close, through the
+  optional `close()` of `IntentStore`. A journal that is used after `stop()`,
+  by a late answer, `outcomes()`, `blocked()` or a watch, opens the connection
+  again. A login as another account creates another journal. A host that must
+  not leave the scope's records on the device calls `await journal.forget()`,
+  which removes them all, including writes that were never sent. It does not
+  stop the journals of the same scope in other tabs: the host stops them, as
+  it does its own.
 - If the provider answers that the scope does not belong to the session, the
   record stays pending and the journal pauses that scope and reports it to the
   host. A valid intent is not blocked because the session changed under it.
@@ -365,15 +391,29 @@ resolves it through `await journal.blocked()`.
 
 Responses carry `{"status": "applied", "result": ...}`,
 `{"status": "rejected", "reason": ...}` or `{"status": "unavailable"}`, with
-the scope, key and epoch echoed. Any other answer, a network failure, a `404`
-or a `5xx` leaves the intent pending. A key conflict, an epoch mismatch for a
-stamped intent or an echo that does not match blocks the record. A `403` or
-`409` without the protocol's body comes from something in front of the
-provider, such as a proxy, a firewall or an expired session, and applied
-nothing: a `403` pauses the scope as a `scope-refused` answer does, and a
-`409` leaves the intent pending. A `200` or `422` whose body is not JSON or
-does not echo the request still blocks the record, because an endpoint outside
-the protocol may have applied it.
+the scope, key and epoch echoed. The HTTP transport maps every answer to one
+of three effects.
+
+- It blocks the record when the answer may mean that the intent was applied
+  and the journal cannot tell what happened: a `200`, `412` or `422` whose body
+  is not JSON or does not echo the scope and key; a `200` or `422` that echoes
+  another epoch; a `409` whose body is protocol JSON with
+  `"status": "key-conflict"` and that echoes another scope, key or epoch
+  (reason `mismatch`); a `409` with that body and the right echo, which is a
+  key conflict; and a `412` for a stamped intent, which is an epoch mismatch.
+  An unstamped intent takes the epoch of its `412` and is sent again.
+- It pauses the scope, leaving the intent pending, on any `403`, whatever its
+  body. A `403` comes from the provider, which refuses the session's account,
+  or from something in front of it, such as a proxy, a firewall or an expired
+  session, and applied nothing.
+- It leaves the intent pending and sends it again, with backoff, after a
+  network failure, a `404`, a `5xx`, a `409` whose body is not protocol JSON,
+  a `412` without an epoch, a `200` or `422` with a status that does not
+  decide the intent, and any other status code. None of them is an answer
+  from the protocol, so none can have applied it.
+
+A protocol `409` is the only `409` that blocks: one from a proxy or an
+endpoint outside the protocol retries, because it applied nothing.
 
 The recovery journal used a status query before a retry. Here the replay is the
 query: because the provider never treats a received key as new within an epoch,
@@ -459,11 +499,12 @@ two tabs, and a conflict saved again.
 
 Two tabs that each made 200 increments of one counter under the Web Lock
 reached 400 of 400 in all 16 counts through IndexedDB, while localStorage lost
-up to 29. With an on-disk profile, strict durability and the CPU limited to
-10%, admission latency had a median between 50.6 and 65.5 ms and a p95
-between 98.7 and 210.4 ms. A forced kill of the browser with a pending intent
-was not tested. The changes made after that commit are covered by the Node.js
-tests.
+up to 29 in those runs. The 399, 398 and 347 given earlier come from the
+separate diagnostic described under Host. With an on-disk profile, strict
+durability and the CPU limited to 10%, admission latency had a median between
+50.6 and 65.5 ms and a p95 between 98.7 and 210.4 ms. A forced kill of the
+browser with a pending intent was not tested. The changes made after that
+commit are covered by the Node.js tests.
 
 RecoverableSave rewritten with a durable group is the DX comparison. Its view
 and host setup must take at most half of the 196 nonblank lines of the

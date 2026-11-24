@@ -445,6 +445,15 @@ the body ran and before the record was removed, the next page resumes it again
 with `late` true. The rest of the body can therefore run more than once per
 intent, but not concurrently.
 
+A group watches and consumes only the terminal records of the members it
+declares. A terminal record of another member stays for `journal.outcomes()`
+and does not stop the group's own outcomes from being consumed, while a
+pending or blocked record of such a member still holds the owner. An answer
+from the provider that arrives for a record another tab has meanwhile blocked
+with reason `version` makes the record terminal when it is `applied`,
+`rejected` or `unavailable` with a matching echo, because the provider decided
+it.
+
 An owner change or an unmount does not retire an intent. It keeps being sent,
 and a component that mounts the same group with the same owner observes it.
 
@@ -472,7 +481,9 @@ both the group's `pending` and the member's status for `blocked`, as in
 group share the owner, and a member's `status` is `idle` while another member
 of the same group and owner has the pending or blocked intent, although
 calling it is refused. In a group with several members, check the other
-members' status for `blocked` too.
+members' status for `blocked` too. Before the journal's first read the member
+reports `idle`; a call made then is still checked against storage, so no write
+is lost.
 
 ### The host
 
@@ -486,15 +497,28 @@ journal.start();
 - The journal keeps its records in IndexedDB, whose transactions are coherent
   across tabs, and tells other tabs of each change through a
   `BroadcastChannel`. localStorage is not offered: in headless Edge it was not
-  coherent across tabs even when every read and write ran under one Web Lock.
+  coherent across tabs even when every read and write ran under one Web Lock
+  (a diagnostic with its own counts, separate from the acceptance runs).
   The `store` option takes another `IntentStore`, as the Node.js tests do.
 - `scope` partitions the storage by account. Call `journal.stop()` before the
   session ends or changes, and create another journal for the next account.
+  `stop()` also closes the connection of the store the journal created by
+  default; a store passed in through `store` is closed by the host with its
+  optional `close()`. Using a journal after `stop()`, for example a late
+  answer, `outcomes()` or `blocked()`, opens the connection again.
   `await journal.forget()` removes every record of the scope in every tab,
   including writes that were never sent, for a host that must not leave them
-  on the device after a logout.
-  When the provider answers that the scope does not belong to the session, the
-  intent stays pending, the journal stops sending and `onPaused` reports it.
+  on the device after a logout. It does not stop the journals of the same
+  scope in other tabs; the host stops them.
+  Any `403` pauses the scope this way: the intent stays pending, the journal
+  stops sending and `onPaused` reports it.
+- The HTTP transport blocks a record on a `200`, `412` or `422` whose body is
+  not JSON or does not echo the scope and key, on an echo of another epoch, on
+  a `412` for an intent already stamped with another epoch, and on a `409`
+  whose body is protocol JSON with `"status": "key-conflict"`: a matching echo
+  is a key conflict and a wrong scope, key or epoch is a mismatch. It retries
+  after a network failure, a `404`, a `5xx`, a `409` that is not protocol
+  JSON, a `412` without an epoch and any other status code.
 - `await journal.outcomes()` gives the outcomes that no member consumed, each
   with `acknowledge()`. `await journal.blocked()` gives the blocked records,
   each with `export()` and `discard()`. Until a blocked record is discarded,
@@ -529,10 +553,10 @@ A graph without one emits no durable runtime and imports nothing from it. A
 component with a durable group renders through the general renderer, like any
 component with an action group.
 
-DurableSave and its host take 66 nonblank lines, against 196 for the
+DurableSave and its host take 67 nonblank lines, against 196 for the
 handwritten view and client, below the limit of 98 that the design set. Its
-delivery, with `intents.mjs` (27548 bytes) and `durable-runtime.mjs` (8260
-bytes) counted, is 42050 JS bytes and 12944 gzip-9 bytes, summed over the
+delivery, with `intents.mjs` (31079 bytes) and `durable-runtime.mjs` (8537
+bytes) counted, is 46267 JS bytes and 14027 gzip-9 bytes, summed over the
 files. The handwritten version measured the same way on the same branch is
 15133 bytes and 3398 gzip-9; the [recovery journal](RECOVERY-JOURNAL.md)
 reported 11039 bytes and 3815 gzip-9 with an earlier compiler. Both exclude

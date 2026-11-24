@@ -36,11 +36,12 @@ action async save(edit: Note) in saving {
 
 Calling `save` stores the intent in the journal before anything is sent. The
 rest of the body runs when the provider decides the outcome, in this page or
-in a later one after a reload. The label reads `save.status`. Save is disabled
-while the intent is pending or blocked and during a review. On a conflict the
-body keeps the person's text in the draft and shows the provider's current
-text. "Keep my text" and "Use their text" take the current revision, and the
-next Save is a new intent with a new key.
+in a later one after a reload. The label is a `calc` over `save.status`, which
+a calc can read like any member status. Save is disabled while the intent is
+pending or blocked and during a review. On a conflict the body keeps the
+person's text in the draft and shows the provider's current text. "Keep my
+text" and "Use their text" take the current revision, and the next Save is a
+new intent with a new key.
 
 The owner is the string `"note"` because the provider keeps one note per
 account. An application with several notes would use the note's id.
@@ -57,9 +58,12 @@ const blocked = await journal.blocked();
 `createNotes` starts the journal, which keeps its records in IndexedDB so that
 every tab of the browser profile sees one journal; the tests pass an in-memory
 `store` instead. Call `journal.stop()` before the session ends or changes, and
-create another journal for the next account. `await journal.forget()` removes
-the account's records in every tab, including writes that were never sent. The `X-Fixture-Account` header
-stands in for the session in this fixture. `journal.outcomes()` and
+create another journal for the next account. `stop()` closes the connection of
+the store the journal created by default, and a journal used after `stop()`
+opens it again. `await journal.forget()` removes the account's records in every
+tab, including writes that were never sent; it does not stop the journals of
+the same account in other tabs, which the host stops. The `X-Fixture-Account`
+header stands in for the session in this fixture. `journal.outcomes()` and
 `journal.blocked()` resolve to what no view consumed and what cannot be sent;
 the host decides what to show for them. Their `owner` is the owner as JSON
 text, `"note"` with its quotes here.
@@ -113,13 +117,13 @@ kill of the browser with a pending intent was not tested.
 
 | | RecoverableSave | DurableSave |
 | --- | --- | --- |
-| Nonblank lines of view and client or host | 60 + 136 = 196 | 45 + 21 = 66 |
-| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 42050, 12944 |
+| Nonblank lines of view and client or host | 60 + 136 = 196 | 46 + 21 = 67 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 46267, 14027 |
 
 The byte counts were measured on this branch with the same method for both:
 the compiled view module and entry, plus the client or host transpiled by
-TypeScript. DurableSave also counts `intents.mjs` (27548 bytes, 8307 gzip-9)
-and `durable-runtime.mjs` (8260 bytes, 2844 gzip-9), which every durable
+TypeScript. DurableSave also counts `intents.mjs` (31079 bytes, 9231 gzip-9)
+and `durable-runtime.mjs` (8537 bytes, 2948 gzip-9), which every durable
 component of an application shares. `runtime.mjs` is left out of both. The
 [recovery journal](../../docs/mvp/RECOVERY-JOURNAL.md) reported 11039 JS bytes
 and 3815 gzip-9 for RecoverableSave with an earlier compiler. Neither number
@@ -142,7 +146,9 @@ the provider refuses the session's account.
   Save with `saving.pending || save.status === "blocked"`.
 - `save.status` is `idle` while another member of the same group and owner has
   the pending or blocked intent, and calling `save` is refused. In a group
-  with several members, check the other members' status too.
+  with several members, check the other members' status too. Before the
+  journal's first read the member reports `idle`; a call made then is still
+  checked against storage, so no write is lost.
 - The durable checks read declared types. `any` passes the owner and JSON
   checks and `{}` passes the JSON checks, so the compiler cannot check what
   those types hold.

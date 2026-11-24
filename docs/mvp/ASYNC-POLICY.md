@@ -508,8 +508,10 @@ journal.start();
 - `scope` partitions the storage by account. Call `journal.stop()` before the
   session ends or changes, and create another journal for the next account.
   `stop()` also closes the connection of the store the journal created by
-  default; a store passed in through `store` is closed by the host with its
-  optional `close()`. Using a journal after `stop()`, for example a late
+  default, and a stopped journal admits nothing until `start()`, even one
+  stopped before it started; a store passed in through `store` is closed by
+  the host with its optional `close()`, which keeps the subscriptions of
+  journals still running on it. Using a journal after `stop()`, for example a late
   answer, `outcomes()` or `blocked()`, opens the connection again.
   `await journal.forget()` removes every record of the scope in every tab,
   including writes that were never sent, for a host that must not leave them

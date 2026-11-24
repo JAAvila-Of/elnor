@@ -323,10 +323,12 @@ The compiler recognizes durable operations by their type from that module.
   comparable.
 - `scope` partitions the storage by account. The journal only reads and sends
   intents of its scope. The host calls `journal.stop()` before the session
-  ends or changes; it aborts requests in flight and sends nothing more, and
-  it closes the IndexedDB connection of a store the journal created by
-  default. A store that the host passed in is the host's to close, through the
-  optional `close()` of `IntentStore`. A journal that is used after `stop()`,
+  ends or changes; it aborts requests in flight, sends and admits nothing
+  more, also when the journal never started, and closes the IndexedDB
+  connection of a store the journal created by default. A store that the host
+  passed in is the host's to close, through the optional `close()` of
+  `IntentStore`; closing it keeps the subscriptions of journals that still
+  run on it. A journal that is used after `stop()`,
   by a late answer, `outcomes()`, `blocked()` or a watch, opens the connection
   again. A login as another account creates another journal. A host that must
   not leave the scope's records on the device calls `await journal.forget()`,

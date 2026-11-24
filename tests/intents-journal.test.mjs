@@ -1045,6 +1045,52 @@ test('stop closes the store the journal created, but not one the host passed', a
   assert.equal(hosted.opened.length, 2);
 });
 
+test('closing a store that two journals share keeps the subscription of the one still running', async t => {
+  const factory = fakeIndexedDB(), channels = [];
+  const channel = () => {
+    const opened = new BroadcastChannel('elnor-intents-shared-test'), close = opened.close.bind(opened);
+    const entry = {closed: false, close};
+    channels.push(entry);
+    opened.close = () => { entry.closed = true; close(); };
+    return opened;
+  };
+  t.after(() => { for (const entry of channels) entry.close(); });
+  const shared = indexedDbIntentStore({indexedDB: factory, channel});
+  const running = setup({storage: shared});
+  const leaving = createIntentJournal({store: shared, scope: 'bob', locks: serialLocks()});
+  leaving.start();
+  const views = [];
+  running.hook.watch('task-edit', '"t1"', view => views.push(view?.state ?? null));
+  await until(() => views.length === 1, 'the first view');
+  // The host stops one journal and closes the store it passed to both.
+  leaving.stop();
+  shared.close();
+  const tab = indexedDbIntentStore({indexedDB: factory, channel});
+  await tab.write(storageKey, JSON.stringify({format: 1, epoch: 'E1', records: [record({state: 'blocked', reason: 'mismatch'})]}));
+  await until(() => views.length === 2, 'the change of the other tab');
+  assert.deepEqual(views, [null, 'blocked']);
+  running.journal.stop();
+  assert.ok(channels.every(entry => entry.closed), 'the last journal to stop closes the channel');
+});
+
+test('stop on a journal that never started refuses admission and closes the store it created', async t => {
+  const factory = fakeIndexedDB();
+  globalThis.indexedDB = factory;
+  t.after(() => { delete globalThis.indexedDB; });
+  const transport = scriptedTransport();
+  const journal = createIntentJournal({scope: 'alice', locks: serialLocks(), createKey: keys()});
+  const hook = journal.operation('tasks.update', {version: 1, transport})[durable].journal;
+  assert.equal(await hook.admit(entry()), 'k1', 'a journal that never started admits');
+  journal.stop();
+  await settle();
+  assert.equal(factory.closed, 1, 'the connection is closed');
+  assert.equal(await hook.admit(entry({owner: '"t2"'})), undefined, 'a stopped journal admits nothing');
+  journal.start();
+  assert.equal(await hook.admit(entry({owner: '"t2"'})), 'k2');
+  await until(() => transport.requests.length === 2, 'both requests after the start');
+  journal.stop();
+});
+
 test('the IndexedDB store commits before it resolves and tells the other tabs', async t => {
   const factory = fakeIndexedDB(), channels = [];
   const channel = () => {

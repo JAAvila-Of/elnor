@@ -43,8 +43,9 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
   const name = storagePrefix + scope, instance = crypto.randomUUID();
   const operations = new Map(), watchers = new Set(), pauseListeners = new Set();
   const inFlight = new Map(), waiting = new Map(), attempts = new Map(), adopted = new Set();
-  // A journal that was stopped admits nothing until it starts again; one that
-  // never started admits, so a host can mount views before calling start.
+  // A journal that was stopped, even before it started, admits nothing until
+  // it starts again; one that never started nor stopped admits, so a host can
+  // mount views before calling start.
   let running = false, stopped = false, paused = false, unsubscribe;
   // A reconciliation whose read or write failed is retried with the backoff.
   let reconcileTimer, reconcileAttempt = 0;
@@ -348,22 +349,25 @@ export function createIntentJournal({store, scope, locks = globalThis.navigator?
       }
       reconcile();
     },
+    // A journal that never started is stopped too: it admits nothing more,
+    // and the store it created, which an admission may have opened, closes.
     stop() {
-      if (!running) return;
-      running = false;
       stopped = true;
-      globalThis.removeEventListener?.('online', online);
-      unsubscribe();
-      unsubscribe = undefined;
-      for (const controller of inFlight.values()) controller.abort();
-      for (const timer of waiting.values()) clearTimeout(timer);
-      inFlight.clear();
-      waiting.clear();
-      attempts.clear();
-      adopted.clear();
-      clearTimeout(reconcileTimer);
-      reconcileTimer = undefined;
-      reconcileAttempt = 0;
+      if (running) {
+        running = false;
+        globalThis.removeEventListener?.('online', online);
+        unsubscribe();
+        unsubscribe = undefined;
+        for (const controller of inFlight.values()) controller.abort();
+        for (const timer of waiting.values()) clearTimeout(timer);
+        inFlight.clear();
+        waiting.clear();
+        attempts.clear();
+        adopted.clear();
+        clearTimeout(reconcileTimer);
+        reconcileTimer = undefined;
+        reconcileAttempt = 0;
+      }
       if (ownStore) store.close();
     },
     async outcomes() {
@@ -492,15 +496,14 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
       await run('readwrite', journals => journals.delete(key));
       announce(key);
     },
-    // Closes the connection once its transactions finish, and the channel.
-    // A later call opens the database again.
+    // Closes the connection once its transactions finish; a later call opens
+    // the database again. The channel stays open while a journal that shares
+    // the store is subscribed: each journal unsubscribes when it stops, and
+    // the last one closes the channel.
     close() {
       const current = opening;
       opening = undefined;
       current?.then(database => database.close(), () => {});
-      listeners.clear();
-      port?.close();
-      port = undefined;
     },
     subscribe(listener) {
       if (!port) {

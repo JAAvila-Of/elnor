@@ -576,6 +576,6 @@ has no IndexedDB, so there the IndexedDB store is only tested against a
 minimal fake of it. The
 [acceptance in headless Edge](DURABLE-INTENTS-DESIGN.md#results) against the
 reference provider, including reloads, two tabs and an account change, passed
-all 19 checks in 7 of 8 runs; the other run failed one check on a socket error
-while loading a static file, outside the journal. A forced kill of the browser
-with a pending intent was not tested.
+all 24 checks in 5 consecutive runs on the final code, with no page errors.
+A forced kill of the browser or of the operating system with a pending intent
+was not tested.

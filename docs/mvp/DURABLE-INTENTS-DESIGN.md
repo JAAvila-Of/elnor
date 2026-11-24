@@ -491,24 +491,33 @@ Edge against the reference provider:
 
 ### Results
 
-The acceptance ran in headless Edge 157 at commit `9eed478`, against the
-reference provider. Of 8 contained runs, 7 passed all 19 checks and 1 passed
-18: its failing check was a socket buffer error while loading a static file
-during a tab reload, outside the journal. The checks covered the list above:
-lost replies with a reload, an outage, an unmount and an owner change, an
-outcome seen only by the host, two tabs on one owner, concurrent replays, an
-epoch change and an expired receipt, an account change, an operation version
-change and a discarded blocked record, one outcome seen by two instances and
-two tabs, and a conflict saved again.
+The acceptance ran in headless Edge 157 against the reference provider, on
+the final code (commit `e99cdae`). Five consecutive contained runs passed all
+24 checks each, with no page errors and no CSP violations. The checks cover
+the list above and five more: a calc label that reflects a member's status; an
+orphan outcome of an undeclared member that does not block the owner's next
+outcome; an answer that arrives for a record another tab blocked by version; a
+started tab that adopts a pending intent a closed tab left, without an online
+event or a reload; and reconciliation after a failed first read, induced by
+holding an IndexedDB connection that blocks a version upgrade past the 10 s
+open bound.
 
-Two tabs that each made 200 increments of one counter under the Web Lock
-reached 400 of 400 in all 16 counts through IndexedDB, while localStorage lost
-up to 29 in those runs. The 399, 398 and 347 given earlier come from the
-separate diagnostic described under Host. With an on-disk profile, strict
-durability and the CPU limited to 10%, admission latency had a median between
-50.6 and 65.5 ms and a p95 between 98.7 and 210.4 ms. A forced kill of the
-browser with a pending intent was not tested. The changes made after that
-commit are covered by the Node.js tests.
+Two tabs that each made 200 locked read-modify-writes of one counter reached
+400 of 400 in all 20 counts through IndexedDB. The localStorage contrast lost
+between 1 and 9 of 400 in a private profile and up to 76 with a profile on
+disk. The 399, 398 and 347 given earlier come from the separate diagnostic
+described under Host.
+
+Admission latency was measured with 50 admissions per run and context, strict
+durability and the CPU limited to 10%. With the profile on an NVMe SSD the
+median was between 1.4 and 1.6 ms, the p95 between 1.7 and 17.3 ms and the
+maximum 859 ms. In a private (in-memory) profile the median was between 0.8
+and 1.0 ms. An earlier round, with the profile on a shared SATA hard disk,
+gave a median of 50.6 to 65.5 ms and a p95 of 98.7 to 210.4 ms, so disk
+speed dominates these figures.
+
+A forced kill of the browser or of the operating system with a pending intent
+has not been tested.
 
 RecoverableSave rewritten with a durable group is the DX comparison. Its view
 and host setup must take at most half of the 196 nonblank lines of the

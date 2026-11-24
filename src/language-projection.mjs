@@ -91,6 +91,9 @@ export function projectSurface(source, filename) {
   const c = span => map.copy(span);
   const property = span => {if(span?.length===0)map.segments.push({originalStart:span.start,generatedStart:map.source.length,length:0});c(span);};
   const propContexts = [], guardChecks = [], recoveryTails = [], ownerChecks = [];
+  // Generated offsets of component bindings and of async actions outside a
+  // group, for the stale write warning.
+  const bindingOffsets = [], staleWriteChecks = [];
   if (ir.header) {
     let cursor = ir.headerSpan.start;
     for (const imp of ir.imports.filter(i => i.path.endsWith('.eln'))) {
@@ -103,14 +106,14 @@ export function projectSurface(source, filename) {
     g('\n');
   }
   g('function __validate(');
-  ir.params.forEach((p, index) => { if (index) g(', '); c(p.rawSpan); });
+  ir.params.forEach((p, index) => { if (index) g(', '); bindingOffsets.push(map.source.length); c(p.rawSpan); });
   g(') {\n');
   for (const state of ir.states) {
-    g('let '); c(state.nameSpan); c(state.typeSpan); g(' = ('); c(state.exprSpan); g(');\n');
+    g('let '); bindingOffsets.push(map.source.length); c(state.nameSpan); c(state.typeSpan); g(' = ('); c(state.exprSpan); g(');\n');
   }
   projectReactiveState(ir.states, g, state => c(state.nameSpan));
   for (const calc of ir.calcs) {
-    g('const '); c(calc.nameSpan); g(' = ('); c(calc.exprSpan); g(');\n');
+    g('const '); bindingOffsets.push(map.source.length); c(calc.nameSpan); g(' = ('); c(calc.exprSpan); g(');\n');
   }
   const groups = new Set();
   if (ir.actionGroups.length) {
@@ -153,6 +156,7 @@ export function projectSurface(source, filename) {
     // A member sees its own group with the signal of its invocation.
     const shadowed = implementation && groups.has(action.group);
     if (shadowed) g(`const ${implementation} = (() => { const ${action.group} = {} as ${memberGroupType}; return `);
+    if (action.async && !action.groupSpan) staleWriteChecks.push(map.source.length);
     g(action.async ? 'async function ' : 'function ');
     if (implementation) g(implementation); else c(action.nameSpan);
     g('('); c(action.paramsSpan); g(') {');
@@ -228,5 +232,5 @@ export function projectSurface(source, filename) {
   g('}, __slots?: {');
   for (const slot of ir.slots) g(`${slot}?: () => void;`);
   g('}): void {}\n');
-  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks};
+  return {ir, map, errors, propContexts, guardChecks, recoveryTails, ownerChecks, bindingOffsets, staleWriteChecks};
 }

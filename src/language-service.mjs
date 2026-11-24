@@ -7,7 +7,7 @@ import {sourceKey,sourcePath,sourceImport} from './source-identity.mjs';
 import {createDocumentStore} from './document-store.mjs';
 import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
-import {actionGroupPolicies, ownerIdentityWarnings} from './action-groups.mjs';
+import {actionGroupPolicies, ownerIdentityWarnings, staleWriteWarnings} from './action-groups.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
 
 const ts = getTs();
@@ -131,6 +131,10 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
     }
     for(const warning of ownerIdentityWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection.ownerChecks)){
       errors.push({...warning,file:doc.file,...position(doc.source,warning.start)});
+    }
+    for(const warning of staleWriteWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection)){
+      const original=doc.projection.map.toOriginal(warning.start,warning.length);
+      if(original)errors.push({...warning,...original,file:doc.file,...position(doc.source,original.start)});
     }
     for (const d of [...ls.getSyntacticDiagnostics(virtualName(doc)), ...ls.getSemanticDiagnostics(virtualName(doc))]) {
       if(doc.projection.recoveryTails?.some(tail=>d.start>=tail.start&&d.start<tail.end))continue;

@@ -64,8 +64,10 @@ the way Elm rules out runtime exceptions:
 - a write that should survive a reload is not durable.
 
 Diagnostics are warnings unless a construct is unsound, and they suggest the
-declaration that fixes the problem. The first warning of this kind exists:
-an action group owner that is an object is compared by identity.
+declaration that fixes the problem. Two exist: an action group owner that is
+an object is compared by identity, and a write to state after an `await`
+outside a group may apply a stale result. The second one found two real races
+in the repository's own `UserEditor` example.
 
 ## What Elnor does not compete on
 
@@ -92,7 +94,7 @@ with measurements. Its static analysis can also feed the verified guarantees.
 
 ## Next steps
 
-1. Compiler diagnostics for the guarantees in part 3, starting with stale
-   writes after `await`.
+1. More compiler diagnostics for the guarantees in part 3, after the stale
+   write warning.
 2. A design for durable intents, including identity, retries, reconciliation
    and conflicts, before any implementation.

@@ -108,6 +108,22 @@ test('10: composed UserEditor handles search, nested selected event, edit and as
   assert.equal(findInput(root,'Buscar usuarios'),search);
   dispose();assert.equal(root.childNodes.length,0);
 });
+test('10b: UserEditor saves once and does not rename another user selected during the save',async()=>{
+  setupDOM();const root=new FakeNode('root'),saved=[],calls=[];const rows=users();
+  let complete;const pending=new Promise(resolve=>{complete=resolve;});
+  const dispose=mountEditor(root,{users:rows,persist:(id,name)=>{calls.push([id,name]);return pending;},remove:async()=>{}},{saved:user=>saved.push(user)});
+  findButton(root,'Luis Ramos').click();await tick();
+  const name=findInput(root,'Nombre');name.value='Luis Rivera';name.dispatch('input');await tick();
+  findButton(root,'Guardar').click();await tick();
+  findButton(root,'Guardando...').click();await tick();
+  assert.deepEqual(calls,[['u2','Luis Rivera']],'a second click while saving starts no second save');
+  findButton(root,'Ana Torres').click();await tick();
+  complete();await tick();
+  assert.deepEqual(saved,[],'the retired save neither emits nor renames');
+  assert.ok(findButton(root,'Ana Torres'),'the user selected during the save keeps its name');
+  assert.ok(findButton(root,'Luis Ramos'));
+  dispose();
+});
 test('11: composed dialog cancels without deleting, then confirms and disposes',async()=>{
   setupDOM();const root=new FakeNode('root'),deleted=[];const rows=users();let removal=0;
   const dispose=mountEditor(root,{users:rows,persist:async()=>{},remove:async()=>{removal++;}},{deleted:id=>deleted.push(id)});

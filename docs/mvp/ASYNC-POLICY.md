@@ -179,6 +179,38 @@ outcome.
   `await` had returned. Writes to Surface state bindings through the retired
   invocation or its Surface helpers are discarded.
 
+### Stale writes outside a group
+
+The editor warns with `ELN-ASYNC-STALE-WRITE` when an async action outside a
+group writes component state after an `await`, including in its own
+right-hand side, in `catch` and `finally`, and before an `await` inside a loop.
+If the action runs again before that run ends, an older result can overwrite a
+newer one. The fix is to join a group, or to check a live value before the
+write, with no `await` between the check and the write:
+
+- an enclosing `if` or `guard` whose condition reads a live value, or an
+  earlier one after the `await` that reads one and returns or throws;
+- for a `catch`, every `await` in its `try` block must reach it through a live
+  check: a rejection through an inner `catch` that starts with one, and a
+  completion past one;
+- an entry lock, such as `if (saving) return; saving = true;` before the first
+  `await`, keeps the action from overlapping itself, so the action is not
+  reported.
+
+Live values are component bindings, properties declared as getters and
+`AbortSignal.aborted`. A property of captured data, such as `response.ok`, is
+not live, and TypeScript can only mark other live properties by declaring them
+as getters, for example `{ get current(): boolean }`. A check inside a `try`
+block does not guard its `finally`, because `finally` also runs after that
+check returns. Locals that shadow state and writes inside nested functions are not
+reported. The warning does not block a check or a build.
+
+The warning found two races in `examples/components/UserEditor.eln`: a second
+click on Save started a second save, and selecting another user during a save
+wrote the draft name to that user. The example now uses
+`action group editing(selectedId) single-flight`, and its Save label reads
+`save.pending`.
+
 ### Cancelling requests
 
 Inside a member, the group's `signal` property is the `AbortSignal` of that

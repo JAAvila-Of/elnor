@@ -186,9 +186,13 @@ test('a journal name is unique across the graph', () => {
   assert.equal(textAt(second, errors[0]), '"notes"');
 });
 
-test('generating a durable group is refused until it is implemented', () => {
-  const ir = parseSurface(component(), 'Editor.eln');
-  assert.throws(() => generate(ir), {code: 'ELN-DURABLE-UNSUPPORTED'});
+test('generating a durable group emits the journal group and its members', () => {
+  const output = generate(parseSurface(component(), 'Editor.eln'));
+  assert.match(output, /createDurableGroup as (\w+)/);
+  const runtime = /createDurableGroup as (\w+)/.exec(output)[1];
+  assert.ok(output.includes(`const editing = ${runtime}("task-edit", () => (`), output);
+  assert.match(output, /const save = \(?editing\.member\("save", \(\) => \(\w+\.notes\.save\), \(edit\) => \(\w+\.notes\.save\)\(edit\), function \(outcome, edit\)/);
+  assert.doesNotMatch(output, /createActionGroup/);
 });
 
 test('invalid journal names are not reported again as duplicates', () => {

@@ -127,24 +127,24 @@ function groupOptions(group){
 function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){
   const diagnostics=validateComponent(ir);
   if(diagnostics.length)throw Object.assign(new Error(diagnostics.map(d=>`${d.code}: ${d.message}`).join('\n')),{diagnostics});
-  // Durable groups need their own emission; refuse them instead of emitting
-  // an ordinary group that would skip the journal.
-  const durableGroup=ir.actionGroups.find(group=>group.policy==='durable');
-  if(durableGroup)throw Object.assign(new Error(`ELN-DURABLE-UNSUPPORTED: Durable action groups cannot be compiled yet. Use another policy for action group '${durableGroup.name}'`),
-    {code:'ELN-DURABLE-UNSUPPORTED',file:ir.filename,...durableGroup.policySpan});
   const ordinaryPaths=runtimeModulePaths(projectSurface(ir.source,ir.filename));
   for(const imp of ir.imports.filter(imp=>!imp.path.endsWith('.eln')&&ordinaryPaths.has(imp.path))){
     if(!moduleImports.has(imp.path))throw Error('ELN-IMPORT-RUNTIME: Use emitGraph to package local ESM dependencies before generating runtime imports');
   }
   const fresh=nameAllocator(ir.source);
   const helpers=Object.fromEntries(['props','state','calc','emit','target','handlers','slots','root','scope'].map(name=>[name,fresh(name)]));
-  const groups=ir.actionGroups;
+  // Durable groups keep their intents in a journal and serialize their owner,
+  // so only the other groups run managed bodies and compare owner identities.
+  const durableGroups=ir.actionGroups.filter(group=>group.policy==='durable');
+  const groups=ir.actionGroups.filter(group=>group.policy!=='durable');
+  const durableMembers=new Set(ir.actions.filter(action=>durableGroups.some(group=>group.name===action.group)).map(action=>action.name));
   // A direct state owner compares revisions. Any other owner, or a list of
   // owners, reads a key that keeps its identity while every element is equal.
   const stateOwners=new Set(groups.flatMap(group=>group.owners.map(owner=>owner.name)).filter(name=>ir.states.some(state=>state.name===name)));
   const ownerKeys=new Map(groups.filter(group=>group.owners.length!==1||group.owners[0].name===null).map(group=>[group.name,fresh('ownerKey')]));
   const runtime=Object.fromEntries([...(hasForm(ir.ui)?['formBinding']:[]),...(hasFieldError(ir.ui)?['fieldErrorBinding']:[]),...(hasAria(ir.ui)?['setAriaBoolean','ariaBooleanBinding']:[]),...(hasDisabled(ir.ui)?['setDisabled','disabledBinding']:[]),...(hasSelect(ir.ui)?['select']:[]),...(hasCheckbox(ir.ui)?['checkbox']:[]),...(hasTextarea(ir.ui)?['textarea']:[]),...(hasClasses(ir.ui)?['setClass','classBinding']:[]),...(hotLists?['runRegionUntracked']:[]),'cell','computed','uninitializedBinding','element','rootElement','text','button','literalText','literalButton','input','when','repeat','mountBoundary','renderComponent','createComponentRoot','renderSlot'].map(name=>[name,fresh(`runtime_${name}`)]));
   if(groups.length)runtime.createActionGroup=fresh('runtime_createActionGroup');
+  if(durableGroups.length)runtime.createDurableGroup=fresh('runtime_createDurableGroup');
   if(stateOwners.size)runtime.actionOwnerCell=fresh('runtime_actionOwnerCell');
   if(ownerKeys.size)runtime.actionOwnerKey=fresh('runtime_actionOwnerKey');
   const runtimeChildren=ir.imports.filter(i=>i.path.endsWith('.eln')&&!i.typeOnly);
@@ -152,8 +152,9 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   const detachedChildren=new Set(runtimeChildren.filter(i=>detachedImports.has(i.path)).map(i=>i.local));
   const fragment=(code,locals=new Map(),kind='expression')=>rewrite(ir,code,locals,kind,helpers);
   const ownerRead=owner=>stateOwners.has(owner.name)?`${helpers.state}.${owner.name}.revision`:fragment(owner.expr);
-  const managedFactories=new Map(groups.length?ir.actions.map(action=>[action.name,fresh('actionBody')]):[]);
-  const managedBodies=groups.length?ir.actions.map(action=>{
+  const managedActions=ir.actions.filter(action=>!durableMembers.has(action.name));
+  const managedFactories=new Map(groups.length?managedActions.map(action=>[action.name,fresh('actionBody')]):[]);
+  const managedBodies=groups.length?managedActions.map(action=>{
     const lease=fresh('actionLease');
     const call=(method,target)=>ts.factory.createCallExpression(
       ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(lease),method),undefined,[target]);
@@ -171,6 +172,15 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     // binding that would shadow the action inside its own body.
     return fragment(`function ${managedFactories.get(action.name)}(${lease}) { return {${action.name}: ${implementation}}.${action.name}; }`,locals,'statement');
   }):[];
+  // A durable member reads its operation at mount, builds the request when it
+  // is called, and resumes its body after the awaited call when the outcome
+  // arrives, possibly in a later page with the stored parameters.
+  const durableBodies=ir.actions.filter(action=>durableMembers.has(action.name)).map(action=>{
+    const {resultName,callee,argument,rest}=action.durable;
+    const outcome=resultName??fresh('outcome');
+    const params=action.params.trim();
+    return `    const ${action.name} = ${fragment(`${action.group}.member(${JSON.stringify(action.name)}, () => (${callee}), (${params}) => (${callee})(${argument}), function (${outcome}${params?', '+params:''}) {${rest}})`)};`;
+  });
   const args=fresh('args'),value=fresh('value'),mount=fresh('mount'),render=fresh('render');
   const seed=hot?fresh('hotSeed'):null,capture=hot?fresh('hotCapture'):null;
   const rows=hotLists?fresh('hotRows'):null;
@@ -211,7 +221,12 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       const owner=ownerKeys.has(group.name)?`${ownerKeys.get(group.name)}.value`:ownerRead(group.owners[0]);
       return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope}${groupOptions(group)});`;
     }),
-    ...ir.actions.filter(action=>action.group).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
+    ...durableGroups.map(group=>{
+      const owner=group.owners.length===1?fragment(group.owners[0].expr):`[${group.owners.map(owner=>fragment(owner.expr)).join(', ')}]`;
+      return `    const ${group.name} = ${runtime.createDurableGroup}(${JSON.stringify(group.journal)}, () => (${owner}), ${helpers.scope});`;
+    }),
+    ...ir.actions.filter(action=>action.group&&!durableMembers.has(action.name)).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
+    ...durableBodies,
     ...ir.states.map((s,index)=>{
       const init=fragment(s.expr);
       const makeCell=stateOwners.has(s.name)?runtime.actionOwnerCell:runtime.cell;

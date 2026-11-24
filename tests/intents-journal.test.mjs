@@ -275,6 +275,16 @@ test('consume refuses a pending record', async () => {
   assert.equal(stored(storage).records.length, 1);
 });
 
+test('consume leaves the record when the consumer no longer accepts it under the lock', async () => {
+  const {storage, hook} = setup({storage: seeded([]), answers: [applied('E1')]});
+  const id = await hook.admit(entry());
+  await until(() => stored(storage).records[0].state === 'terminal', 'the outcome');
+  assert.equal(await hook.consume(id, () => assert.fail('a declined record is not delivered'), () => false), false);
+  assert.equal(stored(storage).records[0].state, 'terminal');
+  assert.equal(await hook.consume(id, () => {}, () => true), true);
+  assert.deepEqual(stored(storage).records, []);
+});
+
 test('a throwing deliver still removes the record and rethrows', async () => {
   const {storage, hook} = setup({storage: seeded([]), answers: [applied('E1')]});
   const id = await hook.admit(entry());

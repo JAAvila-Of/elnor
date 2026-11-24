@@ -196,11 +196,14 @@ export function createIntentJournal({storage, scope, locks = globalThis.navigato
       if (key !== undefined) drive(key);
       return key;
     },
-    consume(id, deliver) {
+    consume(id, deliver, accept = () => true) {
       return exclusive(() => {
         const state = read(), record = find(state, id, 'terminal');
         // The outcomes of one owner are consumed in admission order.
         if (!record || owned(state, record.journal, record.owner).find(item => valid(item) && item.state === 'terminal') !== record) return false;
+        // A consumer that stopped watching the owner while it waited for the
+        // lock leaves the record for the next one.
+        if (!accept()) return false;
         let failure;
         try { deliver(view(record)); } catch (error) { failure = {error}; }
         // A failing handler still counts as delivered, so it does not run again.

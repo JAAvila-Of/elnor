@@ -47,20 +47,20 @@ export function createDurableGroup(journal, readOwner, ownerScope) {
     waiting.delete(id);
     resolve?.(value);
   };
+  // Settles every waiting call with undefined, except those whose outcome this
+  // instance is consuming: once its body ran, a call gets the body's value even
+  // if the body changed the owner or the component was disposed meanwhile.
   const settleAll = () => {
-    for (const resolve of waiting.values()) resolve(undefined);
-    waiting.clear();
+    for (const id of waiting.keys()) if (!consuming.has(id)) settle(id, undefined);
   };
 
   function observe(key, view) {
     if (key !== owner) return;
     if (view) show({owner:key, id:view.id, member:view.member, state:view.state, outcome:durableOutcome(view)});
     else if (last?.state !== 'terminal') show(null);
-    // No record is left for the owner: every outcome was handled somewhere,
-    // and a removal by this instance settles its call once consume returns.
-    if (!view) {
-      for (const id of waiting.keys()) if (!consuming.has(id)) settle(id, undefined);
-    } else if (view.state === 'blocked') settle(view.id, undefined);
+    // No record is left for the owner: every outcome was handled somewhere.
+    if (!view) settleAll();
+    else if (view.state === 'blocked') settle(view.id, undefined);
     else if (view.state === 'terminal') consume(key, view);
   }
 

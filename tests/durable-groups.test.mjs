@@ -29,6 +29,7 @@ component Editor(tasks: {update: DurableOperation<{id: string; title: string}, {
     const outcome = await tasks.update(edit);
     log(outcome.status + ":" + edit.title + ":" + String(outcome.late));
     if (edit.title === "boom") throw new Error("handler failed");
+    if (edit.title === "move") taskId = "t9";
     if (outcome.status === "applied") {
       revision = outcome.result.revision;
       message = "Saved " + edit.title;
@@ -58,6 +59,7 @@ component Editor(tasks: {update: DurableOperation<{id: string; title: string}, {
       button "Save A" => submit("A")
       button "Save B" => submit("B")
       button "Save boom" => submit("boom")
+      button "Save move" => submit("move")
       button "Open t2" => open("t2")
       button "Touch" => touch()
     }
@@ -297,6 +299,36 @@ test('an owner change while the outcome waits for the lock leaves it to the next
   assert.deepEqual(later.log, ['applied:A:false']);
   assert.equal(later.status(), 'success');
   assert.deepEqual(records(storage), []);
+});
+
+test('a body that changes the owner still gives the call its value', async t => {
+  const journal = setup();
+  t.after(() => journal.journal.stop());
+  const view = mount(t, journal);
+  view.click('Save move');
+  await settle();
+  journal.transport.answer(applied(8));
+  await settle();
+  assert.deepEqual(view.log, ['applied:move:false', 'returned:8']);
+  assert.equal(view.revision(), '8');
+  assert.equal(view.status(), 'idle', 'the new owner has no intent');
+  assert.deepEqual(records(journal.storage), []);
+});
+
+test('a component disposed after its body ran still gives the call its value', async t => {
+  const journal = setup();
+  t.after(() => journal.journal.stop());
+  const log = [];
+  let view;
+  // The body logs, and the log disposes the component while the record is
+  // still being removed under the lock.
+  view = mount(t, journal, {log: {push(line) { log.push(line); if (line.startsWith('applied:')) view.dispose(); }}});
+  view.click('Save A');
+  await settle();
+  journal.transport.answer(applied(5));
+  await settle();
+  assert.deepEqual(log, ['applied:A:false', 'returned:5']);
+  assert.deepEqual(records(journal.storage), []);
 });
 
 test('two mounted instances deliver one resume', async t => {

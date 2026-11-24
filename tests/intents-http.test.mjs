@@ -187,6 +187,32 @@ test('a body that is not JSON or echoes another key blocks', async t => {
   }
 });
 
+test('an HTML 403 from outside the protocol pauses the journal and keeps the intent pending', async t => {
+  let refused = true;
+  const server = http.createServer((request, response) => {
+    request.resume();
+    if (refused) {
+      response.writeHead(403, {'Content-Type': 'text/html'});
+      return response.end('<html>Forbidden</html>');
+    }
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'applied', result: {revision: 1}, scope: 'alice', key: request.url.split('/').pop(), epoch: null}));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const {journal, admit} = setup({url: 'http://127.0.0.1:' + server.address().port});
+  t.after(() => journal.stop());
+  let paused = 0;
+  journal.onPaused(() => { paused++; });
+  journal.start();
+  assert.ok(await admit(note('first')));
+  await until(() => paused === 1, 'the pause');
+  assert.equal((await journal.blocked()).length, 0);
+  refused = false;
+  journal.start();
+  await until(async () => (await journal.outcomes()).length === 1, 'the outcome after the session returns');
+});
+
 test('the transport maps answers and sends the documented request', async () => {
   const request = {operation: 'notes.save', key: 'a b', scope: 'alice', epoch: 'E1', input: {text: 'x'}, signal: new AbortController().signal};
   const echo = {scope: 'alice', key: 'a b', epoch: 'E1'};
@@ -201,6 +227,16 @@ test('the transport maps answers and sends the documented request', async () => 
   assert.deepEqual(await map(200, {status: 'applied', result: 7, ...echo, epoch: 'E9'}), {kind: 'mismatch'});
   assert.deepEqual(await map(200, {status: 'applied', result: 7, ...echo, scope: 'bob'}), {kind: 'mismatch'});
   assert.deepEqual(await map(200, 'not json'), {kind: 'mismatch'});
+  assert.deepEqual(await map(422, '<html>Unprocessable</html>'), {kind: 'mismatch'});
+  assert.deepEqual(await map(422, {status: 'rejected', reason: 'no', ...echo, key: 'other'}), {kind: 'mismatch'});
+  // A proxy, a firewall or an expired session answers 403 or 409 outside the
+  // protocol; nothing was applied, so the intent is not blocked.
+  assert.deepEqual(await map(403, '<html>Forbidden</html>'), {kind: 'scope-refused'});
+  assert.deepEqual(await map(403, {error: 'csrf'}), {kind: 'scope-refused'});
+  assert.deepEqual(await map(403, {status: 'scope-refused', ...echo, scope: 'bob'}), {kind: 'scope-refused'});
+  assert.deepEqual(await map(409, '<html>Conflict</html>'), {kind: 'retry'});
+  assert.deepEqual(await map(409, {status: 'key-conflict', ...echo, key: 'other'}), {kind: 'retry'});
+  assert.deepEqual(await map(409, {status: 'busy', ...echo}), {kind: 'retry'});
   for (const status of [404, 500, 503]) assert.deepEqual(await map(status, {status: 'x'}), {kind: 'retry'});
   assert.deepEqual(await map(200, {status: 'surprise', ...echo}), {kind: 'retry'});
   const failing = httpIntentTransport({baseUrl: 'http://x.test', fetch: async () => { throw new TypeError('network'); }});

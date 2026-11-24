@@ -408,8 +408,9 @@ export function indexedDbIntentStore({name = 'elnor-intents', indexedDB: factory
 // A transport that sends each intent to the provider with PUT
 // {baseUrl}/{operation}/{key}. `headers` adds the host's session headers on
 // every request. Answers outside the protocol, network failures, 404 and 5xx
-// leave the intent pending; a body that is not JSON or echoes another scope,
-// key or epoch blocks it.
+// leave the intent pending, and any 403 pauses the scope. A 200, 412 or 422
+// whose body is not JSON or echoes another scope, key or epoch blocks it,
+// because an endpoint outside the protocol may have applied it.
 export function httpIntentTransport({baseUrl, fetch: send = globalThis.fetch, headers = () => ({})} = {}) {
   if (typeof baseUrl !== 'string' || !baseUrl) throw new TypeError('An HTTP transport needs a base URL');
   const base = baseUrl.replace(/\/+$/, '');
@@ -432,13 +433,18 @@ export function httpIntentTransport({baseUrl, fetch: send = globalThis.fetch, he
 }
 
 function mapResponse(status, body, {scope, key, epoch}) {
-  const known = [200, 403, 409, 412, 422].includes(status);
-  if (!known) return {kind: 'retry'};
-  if (!body || typeof body !== 'object' || Array.isArray(body) || body.scope !== scope || body.key !== key) return {kind: 'mismatch'};
+  // A 403 that is not the protocol's comes from a proxy, a firewall or an
+  // expired session, which refuse the session as the provider's does: a
+  // valid intent is not blocked because the session changed under it.
+  if (status === 403) return {kind: 'scope-refused'};
+  const echoed = !!body && typeof body === 'object' && !Array.isArray(body) && body.scope === scope && body.key === key;
+  // A 409 names a key conflict only with the protocol's body; any other 409
+  // applied nothing.
+  if (status === 409) return echoed && body.status === 'key-conflict' ? {kind: 'key-conflict'} : {kind: 'retry'};
+  if (![200, 412, 422].includes(status)) return {kind: 'retry'};
+  if (!echoed) return {kind: 'mismatch'};
   const state = body.status;
   if (status === 412 && typeof body.epoch === 'string') return {kind: 'epoch', epoch: body.epoch};
-  if (status === 409 && state === 'key-conflict') return {kind: 'key-conflict'};
-  if (status === 403 && state === 'scope-refused') return {kind: 'scope-refused'};
   const decided = status === 200 ? ['applied', 'rejected', 'unavailable'] : status === 422 ? ['rejected'] : [];
   if (!decided.includes(state)) return {kind: 'retry'};
   if (body.epoch !== epoch) return {kind: 'mismatch'};

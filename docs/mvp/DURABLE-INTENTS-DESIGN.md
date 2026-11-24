@@ -358,7 +358,13 @@ Responses carry `{"status": "applied", "result": ...}`,
 `{"status": "rejected", "reason": ...}` or `{"status": "unavailable"}`, with
 the scope, key and epoch echoed. Any other answer, a network failure, a `404`
 or a `5xx` leaves the intent pending. A key conflict, an epoch mismatch for a
-stamped intent or an echo that does not match blocks the record.
+stamped intent or an echo that does not match blocks the record. A `403` or
+`409` without the protocol's body comes from something in front of the
+provider, such as a proxy, a firewall or an expired session, and applied
+nothing: a `403` pauses the scope as a `scope-refused` answer does, and a
+`409` leaves the intent pending. A `200` or `422` whose body is not JSON or
+does not echo the request still blocks the record, because an endpoint outside
+the protocol may have applied it.
 
 The recovery journal used a status query before a retry. Here the replay is the
 query: because the provider never treats a received key as new within an epoch,

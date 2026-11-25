@@ -49,14 +49,19 @@ runs in CI on Linux, Windows and macOS; its flows are in `tests/browser/`.
 | Multi-page app | none | none | Routing and multiple entries (phase 3) |
 | App whose BFF owns the database, through server actions | none | none | Server actions (phase 4) |
 | App whose BFF sits in front of another API | none | none | Server actions (phase 4) |
-| Server-rendered app with hydration | none | none | Server rendering (phase 5) |
-| Static site rendered at build time | none | none | Server rendering and routing (phase 5) |
-| App composed of server components and client components | none | none | Server components (phase 6) |
+| App with sign-in, sessions and data per user | none | none | Server actions and authentication (phase 4) |
+| App that receives server updates in real time, over WebSocket or server-sent events | none | none | Real-time channels (phase 5) |
+| Server-rendered app with hydration | none | none | Server rendering (phase 6) |
+| Static site rendered at build time | none | none | Server rendering and routing (phase 6) |
+| App composed of server components and client components | none | none | Server components (phase 7) |
+| App that works offline and can be installed | none | none | Offline and installation (not scheduled) |
+| App translated into several languages | none | none | Internationalization (not scheduled) |
 
 ## Phases
 
-The order was agreed on 2026-11-25, chosen so that each phase unlocks the
-next rows of the matrix. Each phase ends when its applications pass their
+The order was agreed on 2026-11-25 and extended the same day with
+authentication and real-time channels. Each phase unlocks the next rows of the
+matrix. Each phase ends when its applications pass their
 gate.
 
 1. **Regression matrix.** Move the browser runs of the existing applications
@@ -73,15 +78,26 @@ gate.
    library.
 3. **Routing and pages**, with the shared state that pages need (CAP-02). Done
    when the routed single-page app and the multi-page app pass.
-4. **Server actions** (CAP-08), with updating the data after a mutation
-   (CAP-03). Done when both BFF applications pass: a typed mutation reaches an
-   authorized handler, malformed and unauthorized calls fail safely, and a
-   lost reply has a defined outcome. Durable intents become one option of a
-   server action, not its center.
-5. **Server rendering** (CAP-05). Done when the server-rendered app hydrates
+4. **Server actions and authentication** (CAP-08), with updating the data
+   after a mutation (CAP-03) and the account lifecycle (CAP-02). Done when both
+   BFF applications and the signed-in app pass: a typed mutation reaches an
+   authorized handler, malformed and unauthorized calls fail safely, a lost
+   reply has a defined outcome, and after signing out the next user sees none
+   of the previous user's data. Durable intents become one option of a server
+   action, not its center.
+5. **Real-time channels.** A component declares what it subscribes to, and
+   Elnor owns the connection: it reconnects, resumes without losing or
+   repeating messages, closes the channel when the component goes away, and
+   checks the session of every subscription. The origin is declared in the
+   project like any other. Done when the real-time app passes, including a
+   server restart and a subscription refused for another user.
+6. **Server rendering** (CAP-05). Done when the server-rendered app hydrates
    without a second render and the static site is generated at build time.
-6. **Server components** (CAP-07). Done when the composed application passes
+7. **Server components** (CAP-07). Done when the composed application passes
    and the client output contains no server-only code.
+
+Offline and installation, and internationalization, are not scheduled yet.
+Each gets a phase when an application in the matrix needs it, or after phase 7.
 
 Throughout every phase:
 
@@ -150,6 +166,7 @@ Requirements already decided for server actions (phase 4):
 | 2026-11-23 | Region backend toward the default | General renderer as the default | Regions showed no CPU advantage and a runtime two to three times larger ([default](mvp/GENERAL-RENDERER-DEFAULT.md)) |
 | 2026-11-23 | Rendering speed as the differentiator | Declarative asynchronous work as the differentiator | Speed alone would make Elnor one more framework ([vision](VISION.md)) |
 | 2026-11-25 | Capabilities chosen by the vision | Capabilities chosen by the application matrix | Durable intents took a large share of the work without an application that needed them; this map |
+| 2026-11-25 | Six phases without sign-in or real-time updates | Authentication joins server actions, real-time channels become phase 5, offline and translation get rows | The matrix lacked kinds of application that most projects need; asynchronous updates from the server fit the vision directly |
 
 Two patterns stand out. Plans lagged behind the turns, so the map was out of
 date each time. Several turns came after a large investment that measurements

@@ -1,0 +1,21 @@
+body {
+  font-family: Georgia, serif;
+  max-width: 44rem;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  color: rgb(34, 34, 34);
+}
+
+h1 {
+  color: rgb(20, 70, 140);
+}
+
+.widget {
+  border-top: 1px solid rgb(200, 200, 200);
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+}
+
+.feedback button {
+  margin-right: 0.5rem;
+}

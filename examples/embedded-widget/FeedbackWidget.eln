@@ -1,0 +1,23 @@
+component FeedbackWidget(question: string) {
+  event answered(helpful: boolean)
+  state answer: boolean | null = null;
+  calc summary = (
+    answer === null
+      ? "No answer yet"
+      : answer ? "Thanks, glad it helped." : "Thanks, we will improve this page."
+  );
+
+  action choose(helpful: boolean) {
+    answer = helpful;
+    emit.answered(helpful);
+  }
+
+  ui {
+    section .feedback {
+      p question
+      button "Yes" => choose(true)
+      button "No" => choose(false)
+      p summary
+    }
+  }
+}

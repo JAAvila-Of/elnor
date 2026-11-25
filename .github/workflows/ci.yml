@@ -46,6 +46,37 @@ jobs:
         env:
           ELNOR_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
 
+  browser:
+    name: Browser matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - id: python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Use physical temporary path on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          scratch="$(cd "$RUNNER_TEMP" && pwd -P)"
+          printf 'TMPDIR=%s\n' "$scratch" >> "$GITHUB_ENV"
+      - run: npm ci --ignore-scripts
+      # Uses the browser installed on the runner: Edge on Windows, Chrome elsewhere.
+      - run: npm run test:browser
+        env:
+          ELNOR_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+
   commits:
     name: Conventional commits
     if: github.event_name == 'pull_request'
@@ -91,7 +122,7 @@ jobs:
   release:
     name: Publish GitHub release
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.PUBLISH_RELEASES == 'true'
-    needs: test
+    needs: [test, browser]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -34,14 +34,15 @@ Elnor look different.
 
 Each kind of application Elnor must support has one application in
 `examples/`, or names the capability that blocks it. "Gate" is how the
-application is checked today.
+application is checked today. The browser matrix (`npm run test:browser`)
+runs in CI on Linux, Windows and macOS; its flows are in `tests/browser/`.
 
 | Application | Example | Gate today | Blocked by |
 | --- | --- | --- | --- |
-| Client-rendered single-page app | `task-desk`, `components`, `authoring` | Node tests with a fake DOM; untracked browser runs | Nothing |
-| Single-page app with a local host that owns the database | `persistent-task-desk` | Node tests; untracked browser runs | Nothing (loopback fixture without real accounts) |
-| App whose writes survive a reload | `durable-save` | Node tests; untracked browser runs | Nothing (Experimental) |
-| Component mounted in a page that is not Elnor's | none yet | none | Nothing; to be written in phase 1 |
+| Client-rendered single-page app | `task-desk`, `components`, `authoring` | Node tests with a fake DOM; browser matrix | Nothing |
+| Single-page app with a local host that owns the database | `persistent-task-desk` | Node tests; browser matrix | Nothing (loopback fixture without real accounts) |
+| App whose writes survive a reload | `durable-save` | Node tests; browser matrix | Nothing (Experimental) |
+| Component mounted in a page that is not Elnor's | `embedded-widget` | Browser matrix | Nothing (no stable entry for the host page yet) |
 | App that uses npm packages, web fonts and icon libraries | none | none | Packages and assets (phase 2) |
 | Component library consumed by another project | none | none | Packages and assets (phase 2) |
 | Single-page app with routes | none | none | Routing (phase 3) |

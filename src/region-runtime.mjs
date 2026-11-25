@@ -1,11 +1,15 @@
 export {regionContextClear as canMountRegion} from './runtime.mjs';
-import {enqueueRegionJob,cancelRegionJob,regionOrderedRows,regionRangeNodes,createRegionReaction,createRegionTaskTicket,runRegionUntracked,regionHasReader,cell,mountBoundary,setClass,setDisabled,setAriaBoolean,setChecked,setSelectValue} from './runtime.mjs';
+import {enqueueRegionJob,cancelRegionJob,regionOrderedRows,regionRangeNodes,createRegionReaction,createRegionTaskTicket,runRegionUntracked,regionHasReader,cell,mountBoundary,setClass,setDisabled,setAriaBoolean,setChecked,setSelectValue,setupFieldErrorMessage,setFieldError,focusInvalidWhenSettled} from './runtime.mjs';
+// Pending focus-invalid attempts per form; a newer submit or any reset
+// cancels the previous one, as in the general renderer.
+const formFocus=new WeakMap(),formFocusState=node=>{let state=formFocus.get(node);if(!state)formFocus.set(node,state={submission:0});return state;};
 const runtimeLists=true,runtimeComponents=true,runtimeBlueprint=true,runtimeEmits=true,runtimeClasses=true,runtimeDisabled=true,runtimeAria=true,runtimeChecked=true,runtimeSelect=true,runtimeForms=true;
 let currentRegionCollector=null;
 const preserveRowRoot=runtimeLists?Symbol('preserveRowRoot'):null;
 function trackGeneralRead(frame,slot){const bridges=frame.bridges??=[];const source=bridges[slot]??=cell(frame.values[slot]);source.value;}
 function errors(list,message){if(list.length===1)throw list[0];if(list.length)throw new AggregateError(list,message);}
 function updateBinding(region,binding){
+ if(binding.kind==='fieldError'){const value=binding.read(region);if(region.disposed)return;const message=region.refs[binding.node],field=region.refs[binding.field];if(message&&field)setFieldError(field,message,value);return;}
  if(runtimeSelect&&binding.kind==='select'){const value=binding.read(region);if(region.disposed)return;const node=region.refs[binding.node];if(node)setSelectValue(node,value);return;}
  if(runtimeChecked&&binding.kind==='checked'){const value=binding.read(region);if(region.disposed)return;const node=region.refs[binding.node];if(node)setChecked(node,value);return;}
  if(runtimeAria&&binding.kind==='ariaBoolean'){const value=binding.read(region);if(region.disposed)return;const node=region.refs[binding.node];if(node)setAriaBoolean(node,binding.name,value);return;}
@@ -60,9 +64,44 @@ export function mountRegion(target,plan,props,handlers=void 0){
  if(plan.mode==='sequential')return mountBoundary(target,(host,owner)=>{mountTaskRegion(host,plan,{props,handlers,stage(_frame,dispose){owner.own(dispose);}});});
  if(runtimeBlueprint){if(plan.tasks)return mountTaskRegion(target,plan);return mountScalarRegion(target,plan);}
 }
+// General actions run against one handle per component instance: the part of
+// the instance's group that was open when the first action started. A closure
+// keeps that handle, so it reaches the same instance even when it runs after
+// the instance's branch closes, reopens or the component unmounts. When the part
+// closes, the handle freezes every slot of the group before the region clears
+// or reuses it, and later reads and writes use those frozen values, as cells
+// of the general renderer do. The handle also keeps stable references to the
+// component's actions and the props observed when it was created.
+const regionInstanceMark=Symbol('regionInstance'),instancesWithoutState=new WeakMap();
+export function regionInstance(context,slot,group){
+ if(context[regionInstanceMark])return context;
+ if(slot<0){let instance=instancesWithoutState.get(context);if(!instance)instancesWithoutState.set(context,instance=createRegionInstance(context,null,context.props,context.emit));return instance;}
+ const owner=context.owner?context.owner(slot):context,part=owner.parts[group];
+ return part.instance??=createRegionInstance(owner,part,context.props,context.emit);
+}
+function createRegionInstance(owner,part,props,emit){
+ const cells=new Map(),actions=new Map();let frozen=null;
+ const instance={[regionInstanceMark]:true,props,emit,
+  cell(slot){
+   let cell=cells.get(slot);
+   // While the owner is being disposed and before the handle freezes, an
+   // on dispose hook still reads and writes the live values directly.
+   if(!cell)cells.set(slot,cell={get value(){return frozen?frozen.get(slot):owner.disposed?owner.values[slot]:owner.read(slot);},
+    set value(next){if(frozen)frozen.set(slot,next);else if(owner.disposed)owner.values[slot]=next;else owner.write(slot,next);}});
+   return cell;
+  },
+  action(table,index){
+   let action=actions.get(index);
+   if(!action)actions.set(index,action=(...args)=>table[index](instance,...args));
+   return action;
+  },
+  freeze(slots){frozen=new Map(slots.map(slot=>[slot,owner.values[slot]]));}
+ };
+ return instance;
+}
 export function mountScalarRegion(target,plan){
- const doc=target.ownerDocument??document,{root,refs}=plan.instantiate(doc),size=plan.initializers?plan.initializers.length:plan.initial.length,words=Math.ceil(plan.bindings.length/32),resources=[];
- const region={disposed:false,initial:true,root,refs,bridges:null,values:plan.initializers?Array(size):plan.initial.slice(),dirty:new Uint32Array(words),spare:new Uint32Array(words),
+ const doc=target.ownerDocument??document,{root,roots=[root],refs}=plan.instantiate(doc),size=plan.initializers?plan.initializers.length:plan.initial.length,words=Math.ceil(plan.bindings.length/32),resources=[];
+ const region={disposed:false,initial:true,roots,refs,bridges:null,values:plan.initializers?Array(size):plan.initial.slice(),dirty:new Uint32Array(words),spare:new Uint32Array(words),
   read(slot){if(this.disposed)return;if(regionHasReader())trackGeneralRead(this,slot);return this.values[slot];},
   write(slot,next){if(this.disposed)return next;if(Object.is(this.values[slot],next))return next;this.values[slot]=next;
    const invalidations=plan.invalidations[slot];if(invalidations.length){for(const [word,mask] of invalidations)this.dirty[word]|=mask;enqueueRegionJob(this);}if(this.bridges?.[slot])this.bridges[slot].value=next;return next;},
@@ -79,13 +118,13 @@ export function mountScalarRegion(target,plan){
  function dispose(){
   if(region.disposed)return;region.disposed=true;cancelRegionJob(region);const failures=[];
   for(let i=resources.length-1;i>=0;i--){const {node,type,listener}=resources[i];try{node.removeEventListener(type,listener);}catch(error){failures.push(error);}}
-  resources.length=0;try{region.root.remove();}catch(error){failures.push(error);}finally{region.root=null;region.refs=null;region.values=null;region.bridges=null;region.dirty=null;region.spare=null;}
+  resources.length=0;for(const node of region.roots)try{node.remove();}catch(error){failures.push(error);}region.roots=null;region.refs=null;region.values=null;region.bridges=null;region.dirty=null;region.spare=null;
   errors(failures,'Multiple region disposal failures');
  }
  try{
   if(plan.initializers)for(let i=0;i<plan.initializers.length;i++)region.values[i]=plan.initializers[i](region);
   for(const event of plan.events){const node=refs[event.node],listener=runtimeSelect&&event.selectValue?()=>{if(node.selectedIndex>=0)region.write(event.slot,node.value);}:runtimeChecked&&event.type==='change'?()=>region.write(event.slot,node.checked):event.type==='input'?()=>region.write(event.slot,node.value):()=>(event.args?plan.actions[event.action](region,...event.args.map(read=>read(region))):plan.actions[event.action](region));if(runtimeForms&&(event.type==='submit'||event.type==='reset')){const resource={node,type:event.type,listener:e=>{if(region.disposed||(event.type==='reset'&&e.defaultPrevented))return;e.preventDefault();return listener();}};resources.push(resource);node.addEventListener(event.type,resource.listener);}else{resources.push({node,type:event.type,listener});node.addEventListener(event.type,listener);}}
-  region.run();target.append(root);return dispose;
+  region.run();target.append(...roots);return dispose;
  }catch(error){try{dispose();}catch(cleanupError){throw new AggregateError([error,cleanupError],'Region mount and cleanup failed',{cause:error});}throw error;}
 }
 
@@ -103,7 +142,7 @@ function mountForwardRow(parentFrame,plan,spec,value,doc,stage){
  context.values[itemSlot]=value;context.parts[spec.child]=part;parentFrame=null;value=null;
  function dispose(policy){if(context.disposed)return;context.disposed=true;part.active=false;const stop=childDispose;childDispose=null;const failures=[];try{stop?.();}catch(error){failures.push(error);}if(policy!==preserveRowRoot)for(const node of part.domNodes??part.roots)try{node.remove();}catch(error){failures.push(error);}part.roots.length=0;part.domNodes=null;context.parent=null;context.props=null;context.emit=null;context.values=null;context.subscribers=null;context.bridges=null;context.parts=null;target=null;childFrame=null;errors(failures,'Forward row disposal failed');}
  stage(context,dispose);stage=null;if(context.disposed)return dispose;
- const props={};for(const p of child.props)Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(context)});
+ const props={};for(const p of child.props){const source=p.instance?regionInstance(context,p.instance.slot,p.instance.group):context;Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(source)});};
  const handlers=runtimeEmits&&child.handlerFactory?child.handlerFactory(context,()=>!context.disposed):undefined;
  const childStage=(frame,stop)=>{childFrame=frame;childDispose=stop;if(context.disposed){childDispose=null;stop();}};
  try{if(runtimeEmits&&child.handlerFactory)child.render(target,props,childStage,handlers);else child.render(target,props,childStage);if(!context.disposed){part.roots.push(...(childFrame?.parts?.[0]?.roots??[]));if(spec.detached&&(part.roots.length!==1||part.roots[0].nodeType!==1||part.roots[0].parentNode!==null))throw Error('ELN-RUNTIME-003: detached each expects a detached element');if(!spec.detached)part.domNodes=[...target.childNodes];}childFrame=null;target=null;return dispose;}
@@ -157,10 +196,11 @@ function mountTaskRegion(target,plan,config={}){
   const clearTask=id=>{if(plan.mode==='sequential')cancelRegionJob(region.handles[id]);unsubscribe(id);if(plan.mode==='sequential'){if(plan.tasks[id].dynamic)region.handles[id]?.dispose();}else{region.reactions[id]?.dispose();region.reactions[id]=null;}if(region.pending.get(id)===part)region.pending.delete(id);};
   const clearEvent=resource=>{try{resource.node.removeEventListener(resource.type,resource.listener);}finally{resource.node=null;}};
   const clearBranch=c=>{const errorsFound=[];try{disposeGroup(c.child);}catch(error){errorsFound.push(error);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(error){errorsFound.push(error);}errors(errorsFound,'Multiple conditional cleanup failures');};
-  if(part.cleanups){for(let i=part.cleanups.length-1;i>=0;i--)try{const c=part.cleanups[i];if(runtimeComponents&&c.component){const dispose=c.component.dispose;if(runtimeEmits)c.component.active=false;c.component.dispose=null;dispose?.();}else if(runtimeLists&&c.list!==undefined){const found=[];try{resetList(c.list,true);}catch(e){found.push(e);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(e){found.push(e);}errors(found,'Multiple list cleanup failures');}else if(c.child!==undefined)clearBranch(c);else if(c.task!==undefined)clearTask(c.task);else clearEvent(c.resource);}catch(error){failures.push(error);}part.cleanups.length=0;}
+  if(part.cleanups){for(let i=part.cleanups.length-1;i>=0;i--)try{const c=part.cleanups[i];if(runtimeComponents&&c.component){const dispose=c.component.dispose;if(runtimeEmits)c.component.active=false;c.component.dispose=null;dispose?.();}else if(runtimeLists&&c.list!==undefined){const found=[];try{resetList(c.list,true);}catch(e){found.push(e);}try{if(!runtimeLists||!bulkDepth)region.refs[c.node]?.remove();}catch(e){found.push(e);}errors(found,'Multiple list cleanup failures');}else if(c.child!==undefined)clearBranch(c);else if(c.task!==undefined)clearTask(c.task);else if(c.dispose!==undefined){const hook=c.dispose;c.dispose=undefined;hook();}else clearEvent(c.resource);}catch(error){failures.push(error);}part.cleanups.length=0;}
   else{for(const id of plan.groups[group].tasks)clearTask(id);for(let i=part.resources.length-1;i>=0;i--)try{clearEvent(part.resources[i]);}catch(error){failures.push(error);}}
   if(runtimeBlueprint&&plan.mode!=='sequential')for(const node of part.roots)try{node.remove();}catch(error){failures.push(error);}
   else if((!runtimeLists||!bulkDepth)&&!(runtimeLists&&group===entry&&keepEntryRoot)&&(group!==entry||config.detached||config.rowFragment)){const owned=part.domNodes??(config.detached?part.roots:null)??[...(part.fragment?.childNodes??[])];for(const node of owned)try{node.remove();}catch(error){failures.push(error);}}
+  if(part.instance){part.instance.freeze(plan.groups[group].slots);part.instance=null;}
   for(const slot of plan.groups[group].slots){region.values[slot]=undefined;if(region.bridges)region.bridges[slot]=undefined;}
   for(const node of plan.groups[group].nodes)region.refs[node]=undefined;
   part.resources.length=0;part.roots.length=0;part.fragment=null;if(part.domNodes)part.domNodes.length=0;part.domNodes=null;errors(failures,'Multiple branch disposal failures');
@@ -209,16 +249,24 @@ function mountTaskRegion(target,plan,config={}){
   if(group===entry&&!plan.indexedReads){region.state={};region.calc={};region.emit??={};region.locals={};for(let slot=0;slot<plan.names.length;slot++){const name=plan.names[slot];if(name.kind==='item'){Object.defineProperty(region.locals,'s'+slot,{value:{get value(){return region.read(slot);}}});continue;}const map=name.kind==='calc'?region.calc:region.state;Object.defineProperty(map,name.name,{value:{get value(){return region.read(slot);}}});}}
   for(const slot of plan.groups[group].slots){if(!part.active||region.disposed)return part;const initialTask=plan.initialTasks?.[slot];if(initialTask!=null){part.cleanups.push({task:initialTask});runTask(initialTask);if(!part.active||region.disposed)return part;}else if(plan.derived.some(d=>d.slot===slot)){const previous=currentRegionCollector;currentRegionCollector=null;try{region.values[slot]=runRegionUntracked(()=>plan.initializers[slot](region));}finally{currentRegionCollector=previous;}}else{const value=slot===config.itemSlot?config.item:plan.initializers[slot](region);if(!part.active||region.disposed)return part;region.values[slot]=value;}}if(group===entry)config.item=null;
   for(const id of plan.groups[group].tasks)if(plan.tasks[id].kind==='calc'&&!plan.tasks[id].dynamic){subscribe(id,plan.tasks[id].dependencies);part.cleanups.push({task:id});}
-  const event=index=>{const e=plan.events[index],resource={node:region.refs[e.node],type:e.type,listener:null};resource.listener=()=>{if(!part.active||region.disposed)return;if(runtimeSelect&&e.selectValue){if(resource.node.selectedIndex>=0)region.write(e.slot,resource.node.value);}else if(runtimeChecked&&e.type==='change')region.write(e.slot,resource.node.checked);else if(e.type==='input')region.write(e.slot,resource.node.value);else if(runtimeEmits&&e.emit!==undefined)region.emit[e.emit](...(e.args??[]).map(read=>read(region)));else if(e.args){const values=e.args.map(read=>read(region));if(part.active&&!region.disposed)plan.actions[e.action](region,...values);}else plan.actions[e.action](region);};if(runtimeForms)formListener(resource);part.resources.push(resource);part.cleanups.push({resource});resource.node.addEventListener(e.type,resource.listener);};
+  const event=index=>{const e=plan.events[index],resource={node:region.refs[e.node],type:e.type,listener:null};resource.listener=()=>{if(!part.active||region.disposed)return;if(runtimeSelect&&e.selectValue){if(resource.node.selectedIndex>=0)region.write(e.slot,resource.node.value);}else if(runtimeChecked&&e.type==='change')region.write(e.slot,resource.node.checked);else if(e.type==='input')region.write(e.slot,resource.node.value);else if(runtimeEmits&&e.emit!==undefined)region.emit[e.emit](...(e.args??[]).map(read=>read(region)));else if(e.args){const values=e.args.map(read=>read(region));if(part.active&&!region.disposed)plan.actions[e.action](region,...values);}else plan.actions[e.action](region);};
+   if(runtimeForms&&(e.focusInvalid||e.focusForm||e.focusReset)){const state=formFocusState(resource.node),node=resource.node,run=resource.listener;
+    // A form with focus-invalid but no reset action still cancels a pending
+    // focus on reset, without preventing the native reset.
+    if(e.focusReset){resource.listener=event=>{if(resource.node===null||event.defaultPrevented||!part.active||region.disposed)return;state.submission++;};part.resources.push(resource);part.cleanups.push({resource});node.addEventListener(e.type,resource.listener);return;}
+    if(e.focusForm)resource.listener=()=>{if(!part.active||region.disposed)return;state.submission++;return run();};
+    else resource.listener=()=>{if(!part.active||region.disposed)return;const attempt=++state.submission,focus=e.focusInvalid(region);if(typeof focus!=='boolean')throw new TypeError('ELN-FOCUS-INVALID-TYPE: expected a boolean');const result=run();if(focus)queueMicrotask(()=>focusInvalidWhenSettled(node,()=>part.active&&!region.disposed&&attempt===state.submission));return result;};}
+   if(runtimeForms)formListener(resource);part.resources.push(resource);part.cleanups.push({resource});resource.node.addEventListener(e.type,resource.listener);};
   const task=id=>{part.cleanups.push({task:id});runTask(id);};
   for(const index of plan.groups[group].ops){if(region.disposed||!part.active)break;const op=plan.ops[index];
-   if(op.kind==='node'){const spec=plan.nodes[op.node],node=spec.kind==='text'?doc.createTextNode(''):spec.kind==='comment'?doc.createComment(spec.value):doc.createElement(spec.tag);region.refs[op.node]=node;if(spec.className)node.className=spec.className;const host=spec.parent<0?parent:region.refs[spec.parent];if(host)host.append(node);if(spec.type)node.type=spec.type;if(runtimeSelect&&spec.optionValue!==undefined)node.value=spec.optionValue;if(runtimeDisabled&&spec.disabled!==undefined)node.disabled=spec.disabled;if(runtimeAria&&spec.ariaBooleans)for(const [name,value] of Object.entries(spec.ariaBooleans))setAriaBoolean(node,name,value);if(spec.parent<0)part.roots.push(node);}
+   if(op.kind==='node'){const spec=plan.nodes[op.node],node=spec.kind==='text'?doc.createTextNode(''):spec.kind==='comment'?doc.createComment(spec.value):doc.createElement(spec.tag);region.refs[op.node]=node;if(spec.fieldError)setupFieldErrorMessage(node,doc);if(spec.className)node.className=spec.className;const host=spec.parent<0?parent:region.refs[spec.parent];if(host)host.append(node);if(spec.type)node.type=spec.type;if(runtimeSelect&&spec.optionValue!==undefined)node.value=spec.optionValue;if(runtimeDisabled&&spec.disabled!==undefined)node.disabled=spec.disabled;if(runtimeAria&&spec.ariaBooleans)for(const [name,value] of Object.entries(spec.ariaBooleans))setAriaBoolean(node,name,value);if(spec.parent<0)part.roots.push(node);}
    else if(op.kind==='literal'){const node=region.refs[op.node],value=String(plan.nodes[op.node].value??'');if(node.nodeValue!==value)node.nodeValue=value;}
    else if(op.kind==='task')task(op.task);
    else if(op.kind==='event')event(op.event);
+   else if(op.kind==='dispose'){const hook=plan.disposals[op.index],instance=part.instance??=createRegionInstance(region,part,region.props,region.emit);part.cleanups.push({dispose:()=>hook(instance)});}
    else if(runtimeLists&&op.kind==='list'){part.cleanups.push({list:op.index,node:op.node});task(op.task);}
    else if(op.kind==='branch'){part.cleanups.push({child:op.child,node:op.node});task(op.task);}
-   else if(runtimeComponents&&op.kind==='component'){const spec=plan.components[op.index],props={};for(const p of spec.props)Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(region)});const resource={dispose:null};if(runtimeEmits)resource.active=true;const handlers=runtimeEmits&&spec.handlerFactory?spec.handlerFactory(region,()=>resource.active&&part.active&&!region.disposed):undefined;let childFrame=null;part.cleanups.push({component:resource});const childStage=(frame,dispose)=>{childFrame=frame;resource.dispose=dispose;if(region.disposed||!part.active){if(runtimeEmits)resource.active=false;resource.dispose=null;dispose();}};const host=spec.parent<0?parent:region.refs[spec.parent];if(runtimeEmits&&spec.handlerFactory)spec.render(host,props,childStage,handlers);else spec.render(host,props,childStage);if(spec.parent<0&&part.active&&!region.disposed)part.roots.push(...(childFrame?.parts?.[0]?.roots??[]));childFrame=null;}
+   else if(runtimeComponents&&op.kind==='component'){const spec=plan.components[op.index],props={};for(const p of spec.props){const source=p.instance?regionInstance(region,p.instance.slot,p.instance.group):region;Object.defineProperty(props,p.name,{enumerable:true,get:()=>p.read(source)});};const resource={dispose:null};if(runtimeEmits)resource.active=true;const handlers=runtimeEmits&&spec.handlerFactory?spec.handlerFactory(region,()=>resource.active&&part.active&&!region.disposed):undefined;let childFrame=null;part.cleanups.push({component:resource});const childStage=(frame,dispose)=>{childFrame=frame;resource.dispose=dispose;if(region.disposed||!part.active){if(runtimeEmits)resource.active=false;resource.dispose=null;dispose();}};const host=spec.parent<0?parent:region.refs[spec.parent];if(runtimeEmits&&spec.handlerFactory)spec.render(host,props,childStage,handlers);else spec.render(host,props,childStage);if(spec.parent<0&&part.active&&!region.disposed)part.roots.push(...(childFrame?.parts?.[0]?.roots??[]));childFrame=null;}
    else if(op.kind==='input'){const label=doc.createElement('label');region.refs[op.label]=label;(op.parent<0?parent:region.refs[op.parent]).append(label);const span=doc.createElement('span');span.textContent=op.text;const node=doc.createElement('input');node.type='text';if(runtimeDisabled&&plan.nodes[op.node].disabled!==undefined)node.disabled=plan.nodes[op.node].disabled;if(runtimeClasses&&plan.nodes[op.node].className)node.className=plan.nodes[op.node].className;label.append(span,node);region.refs[op.span]=span;region.refs[op.caption]=span.firstChild;region.refs[op.node]=node;event(op.event);task(op.task);}
   }
   if((group!==entry||config.rowFragment)&&part.active)part.domNodes=[...parent.childNodes];

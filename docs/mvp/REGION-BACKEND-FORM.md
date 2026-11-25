@@ -132,3 +132,31 @@ This private feature is not promoted as a performance improvement. Next work
 must reduce sequential execution and delivery overhead on the real form while
 retaining these semantics. Broad editor, startup, allocation, release and public
 promotion gates remain open; parity with Svelte/React remains unproven.
+
+## Field errors and focus-invalid
+
+Sequential regions now render `error=(...)` on `input`, `textarea` and `select`
+and accept `focus-invalid=(...)` on forms. Blueprint regions keep the general
+renderer for both, because they clone templates and would not allocate message
+ids in rendering order.
+
+Both renderers share the runtime helpers. A message is a `span` after the
+field's label with an id from one `elnor-field-error-N` sequence, the
+`elnor-field-error` class and `aria-live="polite"`. The field's `aria-invalid`
+and `aria-describedby` follow the message, and a value that is not a string
+throws `ELN-FIELD-ERROR-TYPE`. On submit, the form reads its focus-invalid value,
+which must be a boolean, runs the action and, once pending updates have run,
+focuses the first enabled field with `aria-invalid="true"`. A newer submit, a
+reset or the form's removal cancels a pending focus; a form without a reset
+action still cancels on reset without preventing the native reset.
+
+The existing focus-invalid scenario in `tests/form-submit.test.mjs` runs on both
+renderers. `tests/region-field-errors.test.mjs` compares ids, attributes and
+messages of fields in the form, in a child component and in list rows with the
+general renderer.
+
+A child component now counts as running code later only when it has an
+`on dispose` hook, an async action, or an action or expression that creates a
+function. A child whose general actions are synchronous and create no
+functions cannot read its props after the event that runs them, so its props
+keep the direct path, including row items.

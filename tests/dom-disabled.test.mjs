@@ -20,6 +20,38 @@ const source=`component Controls() {
  }
 }`;
 function fixture(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'elnor-disabled-'));t.after(()=>{assert.equal(path.dirname(dir),os.tmpdir());assert.ok(path.basename(dir).startsWith('elnor-disabled-'));fs.rmSync(dir,{recursive:true,force:true});});return dir;}
+const grouped=source.replace('section {','section {\n fieldset class=("group") disabled=(locked) {\n legend "Group"')
+ .replace(' button "Toggle"',' }\n button "Toggle"');
+test('fieldset disabled requires a boolean and retains its original span',t=>{
+ const dir=fixture(t),file=path.join(dir,'Controls.eln');
+ const bad=grouped.replace('disabled=(locked) {','disabled=(42) {');
+ const group=parseSurface(bad,file).ui[0].children[0];
+ assert.equal(bad.slice(group.disabledSpan.start,group.disabledSpan.start+group.disabledSpan.length),'42');
+ const service=createSurfaceLanguageService({root:dir});t.after(()=>service.dispose());
+ service.open(file,bad);
+ const issue=service.diagnostics(file).find(d=>d.code==='TS2345');
+ assert.ok(issue);
+ assert.equal(bad.slice(issue.start,issue.start+issue.length),'42');
+});
+for(const backend of ['general','blueprint','sequential'])test('fieldset disabled updates the native group in '+backend,async t=>{
+ const dir=fixture(t),file=path.join(dir,'Controls.mjs');
+ const ir=parseSurface(grouped,path.join(dir,'Controls.eln'));
+ const plan=backend==='sequential'?analyzeSequentialRegion(ir):analyzeRegion(ir);
+ if(backend!=='general'){assert.ok(plan.eligible);assert.equal(plan.mode,backend);}
+ fs.writeFileSync(file,generate(ir,{runtimeImport,...(backend==='general'?{}:{regionRuntimeImport,regionPlan:plan})}));
+ setupDOM();
+ const {mount}=await import(pathToFileURL(file)),root=new FakeNode('root'),stop=mount(root,{});
+ t.after(stop);
+ const group=root.descendants('fieldset')[0],input=findInput(root,'Name');
+ assert.equal(group.disabled,false);
+ findButton(root,'Toggle').click();
+ await tick();
+ assert.equal(group.disabled,true);
+ assert.equal(findInput(root,'Name'),input);
+ findButton(root,'Toggle').click();
+ await tick();
+ assert.equal(group.disabled,false);
+});
 test('disabled prefixes combine with classes in either order and preserve exact ranges and formatting',()=>{
  const ir=parseSurface(source,'Controls.eln');for(const n of ir.ui[0].children.filter(n=>n.disabledSpan))assert.equal(source.slice(n.disabledSpan.start,n.disabledSpan.start+n.disabledSpan.length),n.disabledExpr);
  assert.equal(ir.ui[0].children[0].classExpr,'"action"');assert.equal(ir.ui[0].children[1].disabledExpr,'locked');
@@ -51,7 +83,7 @@ for(const backend of ['general','region'])test(backend+' avoids property writes 
 test('eligible native owned children retain disabled bindings and literal false properties',async t=>{
  const dir=fixture(t),childFile=path.join(dir,'Child.eln'),parentFile=path.join(dir,'Parent.eln');
  const child=parseSurface('component Child(locked: boolean) {\n event fired()\n ui {\n section {\n button disabled=(locked) "Child" => emit.fired()\n button disabled=(false) "Always" => emit.fired()\n }\n }\n}',childFile),parent=parseSurface('import Child from "./Child.eln";\ncomponent Parent() {\n state locked = false;\n action toggle() { locked = !locked; }\n ui {\n section {\n button "Toggle" => toggle()\n Child locked=(locked)\n }\n }\n}',parentFile);
- emitGraph(new Map([[parentFile,parent],[childFile,child]]),path.join(dir,'build'));assert.ok(fs.readdirSync(path.join(dir,'build')).filter(n=>n.endsWith('.mjs')).some(n=>fs.readFileSync(path.join(dir,'build',n),'utf8').includes('renderNativeRegionOwned')));
+ emitGraph(new Map([[parentFile,parent],[childFile,child]]),path.join(dir,'build'),{regionBackend:true});assert.ok(fs.readdirSync(path.join(dir,'build')).filter(n=>n.endsWith('.mjs')).some(n=>fs.readFileSync(path.join(dir,'build',n),'utf8').includes('renderNativeRegionOwned')));
  setupDOM();const {mount}=await import(pathToFileURL(path.join(dir,'build/Parent.mjs'))),root=new FakeNode('root'),stop=mount(root,{});t.after(stop);assert.equal(findButton(root,'Child').disabled,false);assert.equal(findButton(root,'Always').disabled,false);findButton(root,'Toggle').click();await tick();assert.equal(findButton(root,'Child').disabled,true);assert.equal(findButton(root,'Always').disabled,false);
 });
 for(const backend of ['general','region'])test(backend+' retires queued disabled writes when a conditional control is removed',async t=>{

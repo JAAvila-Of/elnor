@@ -11,7 +11,6 @@ component UserEditor(users: User[], persist: (id: string, name: string) => Promi
   state query = "";
   state selectedId: string | null = null;
   state draftName = "";
-  state saving = false;
   state confirming = false;
   state error = "";
   calc visible = localUsers.filter(u => u.name.toLowerCase().includes(query.toLowerCase()));
@@ -34,13 +33,14 @@ component UserEditor(users: User[], persist: (id: string, name: string) => Promi
     confirming = true;
   }
 
-  action async save() {
+  action group editing(selectedId) single-flight
+
+  action async save() in editing {
     if (selectedId === null) return;
     if (draftName.trim().length < 2) {
       error = "El nombre debe tener 2 caracteres como mínimo";
       return;
     }
-    saving = true;
     error = "";
     try {
       await persist(selectedId, draftName.trim());
@@ -55,12 +55,10 @@ component UserEditor(users: User[], persist: (id: string, name: string) => Promi
       }
     } catch {
       error = "No se pudo guardar el usuario";
-    } finally {
-      saving = false;
     }
   }
 
-  action async destroy() {
+  action async destroy() in editing {
     if (selectedId === null) return;
     const id = selectedId;
     try {
@@ -89,7 +87,7 @@ component UserEditor(users: User[], persist: (id: string, name: string) => Promi
       section .editor {
         h2 `Editar: ${draftName}`
         input "Nombre" <-> draftName
-        button (saving ? "Guardando..." : "Guardar") => save()
+        button (save.pending ? "Guardando..." : "Guardar") => save()
         button "Eliminar usuario..." => openDelete()
         if error {
           p error

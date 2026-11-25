@@ -2,7 +2,12 @@
 // It recognizes typed component props/events, named/default slots, and composition.
 import { getTs } from './typescript.mjs';
 import {actionBodyText, actionFunctionPrefix, guardedBodyOffset, projectGuardedBody} from './action-guards.mjs';
+import {actionGroupPolicies} from './action-groups.mjs';
+import {analyzeDurableMember, durableGroupNames, durableJournalPattern} from './durable-members.mjs';
 const ts = getTs();
+export function supportsDisabled(tag) {
+  return ['button', 'submit', 'reset', 'input', 'textarea', 'checkbox', 'select', 'fieldset'].includes(tag);
+}
 export function supportsFieldError(tag) {
   return ['input', 'textarea', 'select'].includes(tag);
 }
@@ -54,6 +59,88 @@ function balanced(s, p, open, close, tolerant=false, guardRecovery=null) {
     }
   }
   throw diagnostic('ELN-PARSE-003',s,starts.at(-1)??p,'unterminated block');
+}
+// The owner list of an action group stays on its declaration line. Each owner
+// is an expression; a bare identifier keeps its name for binding checks. An
+// option is a word or a double-quoted string, such as a durable journal name.
+const groupToken=String.raw`(?:"[^"\r\n]*"?|[^\s;/"])+`;
+const groupTail=new RegExp(String.raw`^[ \t]*([\w-]*)((?:[ \t]+${groupToken})*)[ \t]*(?:;|(?=\/\/|\r?\n|$))`,'d');
+function groupHeader(source, open) {
+  const lineEnd=source.slice(open).search(/\r?\n|$/)+open;
+  let parens;
+  try { parens=balanced(source.slice(0,lineEnd),open,'(',')'); } catch { return null; }
+  const tail=groupTail.exec(source.slice(parens.end));
+  if(!tail)return null;
+  const contents=parens.contents,leading=contents.length-contents.trimStart().length;
+  const ownerSpan=contents.trim()?range(open+1+leading,contents.trim().length):range(open,parens.end-open);
+  const script=ts.createSourceFile('owner.ts',`[${contents}];`,ts.ScriptTarget.Latest,true);
+  const [statement]=script.statements;
+  const list=statement&&ts.isExpressionStatement(statement)&&ts.isArrayLiteralExpression(statement.expression)?statement.expression:null;
+  const valid=list&&script.statements.length===1&&!script.parseDiagnostics?.length
+    &&list.elements.every(element=>!ts.isOmittedExpression(element)&&!ts.isSpreadElement(element));
+  const owners=valid?list.elements.map(element=>{
+    const start=element.getStart(script)-1,text=element.getText(script);
+    return {expr:text,exprSpan:range(open+1+start,text.length),name:ts.isIdentifier(element)?element.text:null};
+  }):null;
+  const optionsStart=parens.end+tail.indices[2][0];
+  const options=[...tail[2].matchAll(new RegExp(groupToken,'g'))].map(token=>({text:token[0],span:range(optionsStart+token.index,token[0].length)}));
+  return {owner:{owner:contents.trim(),ownerSpan,owners},policy:tail[1],policySpan:capture(tail,1,parens.end),
+    options,end:parens.end+tail[0].length};
+}
+// Only queue takes a capacity: the number of calls that may wait. Any policy
+// may add `timeout`, and latest may add `debounce`, each with a duration from
+// 1ms to 3600s.
+const groupDurations=['timeout','debounce'];
+function groupOptions(policy, tokens, groupError) {
+  const result={capacity:policy==='queue'?100:null,timeout:null,debounce:null};
+  const options=[...tokens];
+  const invalid=(span,message)=>groupError('ELN-ACTION-GROUP-POLICY',span,message);
+  if(policy==='queue'&&options.length&&!groupDurations.includes(options[0].text)){
+    const token=options.shift();
+    result.capacitySpan=token.span;
+    if(/^[1-9]\d{0,5}$/.test(token.text))result.capacity=Number(token.text);
+    else invalid(token.span,'Write the queue capacity as a whole number from 1 to 999999');
+  }
+  while(options.length){
+    const token=options.shift();
+    if(!groupDurations.includes(token.text)){
+      invalid(token.span,/^\d/.test(token.text)?'Only the queue policy takes a capacity'
+        :`Unknown action group option '${token.text}'. Use timeout or debounce followed by a duration`);
+      continue;
+    }
+    const name=token.text,value=options.shift();
+    if(result[`${name}Span`]){invalid(token.span,`Declare the ${name} once`);continue;}
+    result[`${name}Span`]=value?.span??token.span;
+    if(name==='debounce'&&policy!=='latest'){invalid(token.span,'Use debounce with the latest policy');continue;}
+    const parsed=value&&/^([1-9]\d{0,6})(ms|s)$/.exec(value.text);
+    const milliseconds=parsed?Number(parsed[1])*(parsed[2]==='s'?1000:1):NaN;
+    if(milliseconds<=3600000)result[name]=milliseconds;
+    else invalid(result[`${name}Span`],`Write the ${name} as a duration from 1ms to 3600s, such as 500ms or 10s`);
+  }
+  return result;
+}
+// durable takes only its journal name, a double-quoted string that identifies
+// the stored intents, so it can be checked for uniqueness across the graph.
+function durableOptions(group, tokens, groupError) {
+  const result={capacity:null,timeout:null,debounce:null,journal:null,journalSpan:null};
+  const options=[...tokens];
+  const only='A durable group takes only a journal name, such as durable "task-edit"';
+  const isOption=token=>groupDurations.includes(token.text)||/^\d/.test(token.text);
+  if(!options.length||isOption(options[0])){
+    groupError('ELN-DURABLE-POLICY',options.length?options[0].span:group.policySpan,options.length?only
+      :'Write the journal name after durable, such as durable "task-edit"');
+    return result;
+  }
+  const token=options.shift();
+  result.journalSpan=token.span;
+  result.journal=durableJournalPattern.test(token.text)?token.text.slice(1,-1):token.text;
+  if(result.journal===token.text)groupError('ELN-DURABLE-NAME',token.span,
+    'Write the journal name as a double-quoted string of 1 to 80 letters, digits, dots, hyphens or underscores');
+  if(options.length){
+    const start=options[0].span.start,last=options.at(-1).span;
+    groupError('ELN-DURABLE-POLICY',range(start,last.start+last.length-start),only);
+  }
+  return result;
 }
 function checkExpr(source, at, expr, tolerant=false, exact=false) {
   const prefix='const x = (';
@@ -138,13 +225,13 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if(!s||s.startsWith('//'))continue;
       if(s==='}'){if(!nested)throw diagnostic('ELN-UI-BRACE',source,offset,'unexpected }');closed=true;break;}
       let m;
-      const styled=/^(section|main|article|header|div|ul|li|footer|nav|h1|h2|h3|p|strong|small|span|output|input|textarea|checkbox|select|button|form|submit|reset)\s+(?=[A-Za-z][\w-]*\s*=)/d.exec(s);
+      const styled=/^(section|main|article|header|div|ul|li|footer|nav|fieldset|h1|h2|h3|p|strong|small|span|output|legend|input|textarea|checkbox|select|button|form|submit|reset)\s+(?=[A-Za-z][\w-]*\s*=)/d.exec(s);
       if(styled){
         const tag=styled[1],style={},seen=new Set();let cursor=styled[0].length;
         while(true){
           const property=/^([A-Za-z][\w-]*)\s*=\s*/.exec(s.slice(cursor));if(!property)break;
           const name=property[1],nameAt=base+cursor;
-          if(!['class','disabled','aria-pressed','aria-current','error','focus-invalid','on-input'].includes(name)||name==='disabled'&&!['button','submit','reset','input','textarea','checkbox','select'].includes(tag)||name.startsWith('aria-')&&tag!=='button'||name==='error'&&!supportsFieldError(tag)||name==='focus-invalid'&&tag!=='form'||name==='on-input'&&!supportsInputCallback(tag))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Unsupported DOM property ${name} on ${tag}`);
+          if(!['class','disabled','aria-pressed','aria-current','error','focus-invalid','on-input'].includes(name)||name==='disabled'&&!supportsDisabled(tag)||name.startsWith('aria-')&&tag!=='button'||name==='error'&&!supportsFieldError(tag)||name==='focus-invalid'&&tag!=='form'||name==='on-input'&&!supportsInputCallback(tag))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Unsupported DOM property ${name} on ${tag}`);
           if(seen.has(name))throw diagnostic('ELN-DOM-ATTRIBUTE',source,nameAt,`Duplicate DOM property ${name}`);seen.add(name);cursor+=property[0].length;
           if(s[cursor]!=='(')throw diagnostic('ELN-DOM-ATTRIBUTE',source,base+cursor,`Expected a parenthesized ${name} expression`);
           let parsed;try{parsed=balanced(s,cursor,'(',')');}catch(error){throw diagnostic(name==='class'?'ELN-CLASS-SYNTAX':'ELN-DOM-SYNTAX',source,base+(error.start??cursor),error.message);}
@@ -154,8 +241,9 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
           cursor=parsed.end;cursor+=/^\s*/.exec(s.slice(cursor))[0].length;
         }
         const rest=s.slice(cursor),at=base+cursor;
-        if(['section','main','article','header','div','ul','li','footer','nav'].includes(tag)){
-          if(rest!=='{')throw diagnostic('ELN-CLASS-SYNTAX',source,at,'Expected a container block after class expression');
+        if(['section','main','article','header','div','ul','li','footer','nav','fieldset'].includes(tag)){
+          if(rest!=='{')throw diagnostic(tag==='fieldset'?'ELN-DOM-SYNTAX':'ELN-CLASS-SYNTAX',source,at,
+            tag==='fieldset'?'Expected a fieldset block after DOM properties':'Expected a container block after class expression');
           out.push({kind:'container',tag,className:null,...style,children:nodes(true),line});continue;
         }
         if(tag==='form'){
@@ -181,7 +269,7 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
           out.push({kind:'button',label:checkExpr(source,at,button[1],tolerant),labelSpan:capture(button,1,at),expr:checkExpr(source,at,button[2],tolerant),exprSpan:capture(button,2,at),...style,line});continue;
         }
         if(!rest)throw diagnostic('ELN-CLASS-SYNTAX',source,at,'Expected a text expression after class');
-        out.push({kind:'text',tag,expr:checkExpr(source,at,rest,tolerant),exprSpan:range(at,rest.length),...style,line});continue;
+        out.push({kind:'text',tag,...(tag==='legend'?{tagSpan:range(base,tag.length)}:{}),expr:checkExpr(source,at,rest,tolerant),exprSpan:range(at,rest.length),...style,line});continue;
       }
       if((m=/^form(?:\s+\.([A-Za-z][\w-]*))?\s+=>\s*(.+?)\s*\{$/d.exec(s))){out.push({kind:'container',tag:'form',className:m[1]??null,tagSpan:range(base,4),submitExpr:checkExpr(source,offset,m[2],tolerant),submitSpan:capture(m,2,base),children:nodes(true),line});continue;}
       if((m=/^reset\s+(.+)$/d.exec(s))){out.push({kind:'button',reset:true,tagSpan:range(base,5),label:checkExpr(source,offset,m[1],tolerant),labelSpan:capture(m,1,base),expr:'undefined',line});continue;}
@@ -190,7 +278,7 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if((m=/^each\s+([A-Za-z_]\w*)\s+in\s+(.+?)\s+by\s+(.+?)\s*\{$/d.exec(s))){
         out.push({kind:'each',variable:m[1],variableSpan:capture(m,1,base),collection:checkExpr(source,offset,m[2],tolerant),collectionSpan:capture(m,2,base),key:checkExpr(source,offset,m[3],tolerant),keySpan:capture(m,3,base),children:nodes(true),line});continue;
       }
-      if((m=/^(section|main|article|header|div|ul|li|footer|nav)(?:\s+\.([A-Za-z][\w-]*))?\s*\{$/.exec(s))){
+      if((m=/^(section|main|article|header|div|ul|li|footer|nav|fieldset)(?:\s+\.([A-Za-z][\w-]*))?\s*\{$/.exec(s))){
         out.push({kind:'container',tag:m[1],className:m[2]??null,children:nodes(true),line});continue;
       }
       if((m=/^fill\s+([A-Za-z_]\w*)\s*\{$/d.exec(s))){out.push({kind:'fill',name:m[1],nameSpan:capture(m,1,base),children:nodes(true),line});continue;}
@@ -205,8 +293,8 @@ function parseUI(source, body, bodyOffset,tolerant=false,recoveryDiagnostics=[])
       if((m=/^button\s+(.+?)\s+=>\s+(.+)$/d.exec(s))){
         out.push({kind:'button',label:checkExpr(source,offset,m[1],tolerant),labelSpan:capture(m,1,base),expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
       }
-      if((m=/^(h1|h2|h3|p|strong|small|span|output)\s+(.+)$/d.exec(s))){
-        out.push({kind:'text',tag:m[1],expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
+      if((m=/^(h1|h2|h3|p|strong|small|span|output|legend)\s+(.+)$/d.exec(s))){
+        out.push({kind:'text',tag:m[1],...(m[1]==='legend'?{tagSpan:capture(m,1,base)}:{}),expr:checkExpr(source,offset,m[2],tolerant),exprSpan:capture(m,2,base),line});continue;
       }
       if((m=/^([A-Z][A-Za-z_0-9]*)(?:\s+(.+?))?\s*\{$/d.exec(s))){
         out.push({kind:'component',name:m[1],nameSpan:capture(m,1,base),props:parseAttributes(source,m[2]?base+m.indices[2][0]:base+m[1].length,m[2]||'',tolerant,recoveryDiagnostics),attributesSpan:range(base+m[1].length,s.length-m[1].length-1),children:nodes(true),line});continue;
@@ -262,7 +350,12 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   const body=balanced(source,pos,'{','}',tolerant,guardRecovery);
   if(skip(source,body.end)!==source.length)throw diagnostic('ELN-PARSE-TRAIL',source,body.end,'unexpected content after component');
   pos++;
-  const states=[],calcs=[],actions=[],events=[];let ui=null,disposal=null;
+  const states=[],calcs=[],actions=[],events=[],actionGroups=[];let ui=null,disposal=null;
+  function groupError(code, span, message) {
+    const error=Object.assign(diagnostic(code,source,span.start,message),{length:span.length});
+    if(!tolerant)throw error;
+    recoveryDiagnostics.push(error);
+  }
   while(pos<body.end-1){
     pos=skip(source,pos);if(pos>=body.end-1)break;
     const remaining=source.slice(pos);let match;
@@ -296,10 +389,31 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       if(declarations.length>1)throw diagnostic('ELN-EVENT-ARITY',source,start,'spike 003 supports at most one event argument');
       events.push({name:match[1],nameSpan:capture(match,1,pos),params:declarations,line:source.slice(0,pos).split('\n').length});pos=p.end;continue;
     }
+    let header;
+    if((match=/^action[ \t]+group[ \t]+([A-Za-z_]\w*)[ \t]*\(/d.exec(remaining))&&(header=groupHeader(source,pos+match[0].length-1))){
+      const group={name:match[1],nameSpan:capture(match,1,pos),...header.owner,
+        policy:header.policy,policySpan:header.policySpan,line:source.slice(0,pos).split('\n').length};
+      if(!group.owners)groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
+        'Write the owner as an expression or a comma-separated list of expressions');
+      else if(!group.owners.length)groupError('ELN-ACTION-GROUP-OWNER',group.ownerSpan,
+        `Name at least one owner for action group '${group.name}'`);
+      if(!actionGroupPolicies.includes(group.policy))groupError('ELN-ACTION-GROUP-POLICY',group.policySpan,
+        'Choose single-flight, latest, keep-latest, queue or durable as the action group policy');
+      Object.assign(group,group.policy==='durable'?durableOptions(group,header.options,groupError)
+        :groupOptions(group.policy,header.options,groupError));
+      actionGroups.push(group);pos=header.end;continue;
+    }
     if((match=/^action\s+(async\s+)?([A-Za-z_]\w*)\s*\(/d.exec(remaining))){
       const start=pos+match[0].length-1,p=balanced(source,start,'(',')');
-      const blockAt=skip(source,p.end),b=balanced(source,blockAt,'{','}',tolerant,guardRecovery);
-      const action={name:match[2],nameSpan:capture(match,2,pos),params:p.contents,paramsSpan:range(start+1,p.contents.length),bodySpan:range(blockAt+1,b.contents.length),async:!!match[1],line:source.slice(0,pos).split('\n').length};
+      let blockAt=skip(source,p.end),membership;
+      const member=/^in\b[ \t]*([A-Za-z_]\w*|)/d.exec(source.slice(blockAt));
+      if(member){
+        membership={group:member[1],groupSpan:capture(member,1,blockAt)};
+        if(!match[1])groupError('ELN-ACTION-GROUP-ASYNC',membership.groupSpan,'Add async to an action that joins a group');
+        blockAt=skip(source,blockAt+member[0].length);
+      }
+      const b=balanced(source,blockAt,'{','}',tolerant,guardRecovery);
+      const action={name:match[2],nameSpan:capture(match,2,pos),params:p.contents,paramsSpan:range(start+1,p.contents.length),bodySpan:range(blockAt+1,b.contents.length),async:!!match[1],line:source.slice(0,pos).split('\n').length,...membership};
       const prefix=actionFunctionPrefix(action);
       Object.assign(action,projectGuardedBody(ts,source,action,prefix,
         at=>balanced(source,at,'{','}',tolerant).end,
@@ -344,11 +458,31 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
   if(!ui)throw diagnostic('ELN-UI-MISSING',source,body.end-1,'component needs ui');
   const names=[...params,...states,...calcs,...actions].map(x=>x.name);
   if(new Set(names).size!==names.length)throw diagnostic('ELN-SEM-NAME',source,0,'duplicate binding');
+  const boundNames=new Set([...names,'emit']);
+  const owners=new Set([...params,...states,...calcs].map(item=>item.name));
+  const groups=new Set();
+  for(const group of actionGroups){
+    if(boundNames.has(group.name))groupError('ELN-ACTION-GROUP-NAME',group.nameSpan,`Choose an unused name for action group '${group.name}'`);
+    else groups.add(group.name);
+    boundNames.add(group.name);
+    for(const owner of group.owners??[])if(owner.name!==null&&!owners.has(owner.name))groupError('ELN-ACTION-GROUP-OWNER',owner.exprSpan,
+      `Action group owner '${owner.name}' must name a prop, state or calc in this component`);
+  }
+  for(const action of actions)if(action.groupSpan&&!groups.has(action.group)){
+    groupError('ELN-ACTION-GROUP-MEMBER',action.groupSpan,groups.size
+      ? `Choose a declared action group: ${[...groups].join(', ')}` : 'Declare an action group before adding members');
+  }
   if(new Set(events.map(x=>x.name)).size!==events.length)throw diagnostic('ELN-SEM-EVENT',source,0,'duplicate event declaration');
   const mutable=new Set(states.map(x=>x.name));
   const slots=new Set();
-  function validate(nodes,inForm=false){
-    for(const n of nodes){
+  function validate(nodes,inForm=false,parentTag){
+    for(const [index,n] of nodes.entries()){
+      if(n.tag==='legend'&&(parentTag!=='fieldset'||index!==0)){
+        const error=Object.assign(diagnostic('ELN-LEGEND-POSITION',source,n.tagSpan.start,
+          'Place legend first inside its fieldset'),{length:n.tagSpan.length});
+        if(!tolerant)throw error;
+        recoveryDiagnostics.push(error);
+      }
       if(n.tag==='form'){
         const handlers=n.children.filter(child=>child.kind==='on');
         if(handlers.length>1)throw Object.assign(diagnostic('ELN-FORM-EVENT',source,handlers[1].nameSpan.start,'Only one reset handler is supported on a form'),{length:handlers[1].nameSpan.length});
@@ -361,10 +495,15 @@ export function parseSurface(source,filename='Component.eln',{tolerant=false,gua
       if(n.tag==='form'&&inForm)throw diagnostic('ELN-FORM-NESTING',source,n.tagSpan.start,'Nested forms are not supported');
       if(n.kind==='input'&&!mutable.has(n.binding))throw diagnostic('ELN-SEM-BIND',source,['textarea','checkbox','select'].includes(n.tag)?n.bindingSpan.start:0,`binding ${n.binding} must be state`);
       if(n.kind==='slot'){if(slots.has(n.name))throw diagnostic('ELN-SEM-SLOT',source,0,`duplicate slot ${n.name}`);slots.add(n.name);}
-      if(n.children)validate(n.children,inForm||n.tag==='form');
+      if(n.children)validate(n.children,inForm||n.tag==='form',n.tag);
     }
   }
   validate(ui);
   const headerStart=headerOffset+headerSource.length-headerSource.trimStart().length;
-  return {name,nameSpan:capture(m,1,0),params,states,calcs,actions,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
+  const ir={name,nameSpan:capture(m,1,0),params,states,calcs,actions,actionGroups,events,...(disposal?{disposal}:{}),ui,slots:[...slots],header,headerSpan:range(headerStart,header.length),imports,filename,source,recoveryDiagnostics};
+  // The parser keeps the shape of each durable member; validation reports why
+  // a member has none.
+  const durable=durableGroupNames(ir);
+  for(const action of actions)if(durable.has(action.group))action.durable=analyzeDurableMember(action,ir).durable;
+  return ir;
 }

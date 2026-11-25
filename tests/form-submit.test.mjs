@@ -37,7 +37,7 @@ test('submit labels retain arrow-like text and TS expressions',()=>{for(const la
 test('nested forms through imported components are rejected at the component reference',t=>{const d=dir(t),file=path.join(d,'Create.eln'),child=path.join(d,'Child.eln'),text='import Child from "./Child.eln";\n'+base.replace('input "Title" <-> title','Child'),source='component Child() {\n action go() {}\n ui {\n form => go() {\n submit "Send"\n }\n }\n}';const errors=validateGraph(new Map([[file,parseSurface(text,file)],[child,parseSurface(source,child)]]));assert.ok(errors.some(e=>e.code==='ELN-FORM-NESTING'&&text.slice(e.start,e.start+e.length)==='Child'));});
 test('input-only child components remain valid inside forms',t=>{const d=dir(t),file=path.join(d,'Create.eln'),child=path.join(d,'Child.eln'),text='import Child from "./Child.eln";\n'+base.replace('input "Title" <-> title','Child'),source='component Child() {\n state draft = "";\n ui {\n input "Child field" <-> draft\n }\n}';assert.deepEqual(validateGraph(new Map([[file,parseSurface(text,file)],[child,parseSurface(source,child)]])),[]);});
 test('async form action prevents navigation before its first await',async t=>{const source=base.replace('action create(amount: number) { count += amount; }','action async create(amount: number) { await Promise.resolve(); count += amount; }'),{root,form}=await mounted(t,'general',source);let prevented=false;form.listeners.submit[0]({preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(root.descendants('p')[0].textContent,'0');await tick();assert.equal(root.descendants('p')[0].textContent,'2');});
-test('opt-in submit waits for field errors, skips unavailable controls and cancels stale focus',async t=>{
+for(const backend of ['general','sequential'])test(backend+' opt-in submit waits for field errors, skips unavailable controls and cancels stale focus',async t=>{
   const source=base
     .replace('state title = "";','state title = "";\n state notes = "";\n calc error = count > 0 ? "Required" : "";')
     .replace('class=("composer")','class=("composer") focus-invalid=(true)')
@@ -45,7 +45,7 @@ test('opt-in submit waits for field errors, skips unavailable controls and cance
       input error=(error) disabled=(true) "Disabled" <-> title
       textarea error=(error) "Notes" <-> notes
       input error=(error) "Later" <-> title`);
-  const {root,form,stop}=await mounted(t,'general',source);
+  const {root,form,stop}=await mounted(t,backend,source);
   const [hidden,disabled,later]=form.descendants('input');
   const notes=form.descendants('textarea')[0];
   const focused=[];

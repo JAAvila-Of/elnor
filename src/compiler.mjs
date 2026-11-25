@@ -15,6 +15,7 @@ import {moduleGraphRevision,sharedModuleUrl} from './module-revision.mjs';
 import {proveRenderModule} from './render-module-proof.mjs';
 import {proveDerivedListReplacement} from './surface-hot-proof.mjs';
 import {componentHotContract,hotContract} from './hot-contract.mjs';
+import {managedGeneratorBody} from './managed-action-lowering.mjs';
 import {sourceKey,surfaceRecords,surfaceOutputs,moduleSpecifier,sourcePath,sourceImport} from './source-identity.mjs';
 const ts=getTs();
 const ROOT=fileURLToPath(new URL('..',import.meta.url));
@@ -118,7 +119,12 @@ function hasFieldError(nodes){return nodes.some(n=>n.errorExpr!==undefined||(n.c
 function disabledLiteral(code){if(code===undefined)return undefined;const sf=ts.createSourceFile('disabled.ts',`(${code});`,ts.ScriptTarget.Latest,true);let n=sf.statements[0]?.expression;while(n&&ts.isParenthesizedExpression(n))n=n.expression;return n?.kind===ts.SyntaxKind.TrueKeyword?true:n?.kind===ts.SyntaxKind.FalseKeyword?false:undefined;}
 function hasClasses(nodes){return nodes.some(n=>n.classExpr!==undefined||(n.children&&hasClasses(n.children)));}
 function classLiteral(code){if(code===undefined)return undefined;const sf=ts.createSourceFile('class.ts',`(${code});`,ts.ScriptTarget.Latest,true);let n=sf.statements[0]?.expression;while(n&&ts.isParenthesizedExpression(n))n=n.expression;return n&&(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))?n.text:undefined;}
-function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',hot=false,hotLists,hotChild=false}={}){
+// Action group options are emitted only when the group declares them.
+function groupOptions(group){
+  const options=['capacity','timeout','debounce'].filter(name=>group[name]!==null).map(name=>`${name}: ${group[name]}`);
+  return options.length?`, {${options.join(', ')}}`:'';
+}
+function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImports=new Set(),runtimeImport='./runtime.mjs',durableRuntimeImport='./durable-runtime.mjs',hot=false,hotLists,hotChild=false}={}){
   const diagnostics=validateComponent(ir);
   if(diagnostics.length)throw Object.assign(new Error(diagnostics.map(d=>`${d.code}: ${d.message}`).join('\n')),{diagnostics});
   const ordinaryPaths=runtimeModulePaths(projectSurface(ir.source,ir.filename));
@@ -127,11 +133,54 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
   }
   const fresh=nameAllocator(ir.source);
   const helpers=Object.fromEntries(['props','state','calc','emit','target','handlers','slots','root','scope'].map(name=>[name,fresh(name)]));
+  // Durable groups keep their intents in a journal and serialize their owner,
+  // so only the other groups run managed bodies and compare owner identities.
+  const durableGroups=ir.actionGroups.filter(group=>group.policy==='durable');
+  const groups=ir.actionGroups.filter(group=>group.policy!=='durable');
+  const durableMembers=new Set(ir.actions.filter(action=>durableGroups.some(group=>group.name===action.group)).map(action=>action.name));
+  // A direct state owner compares revisions. Any other owner, or a list of
+  // owners, reads a key that keeps its identity while every element is equal.
+  const stateOwners=new Set(groups.flatMap(group=>group.owners.map(owner=>owner.name)).filter(name=>ir.states.some(state=>state.name===name)));
+  const ownerKeys=new Map(groups.filter(group=>group.owners.length!==1||group.owners[0].name===null).map(group=>[group.name,fresh('ownerKey')]));
   const runtime=Object.fromEntries([...(hasForm(ir.ui)?['formBinding']:[]),...(hasFieldError(ir.ui)?['fieldErrorBinding']:[]),...(hasAria(ir.ui)?['setAriaBoolean','ariaBooleanBinding']:[]),...(hasDisabled(ir.ui)?['setDisabled','disabledBinding']:[]),...(hasSelect(ir.ui)?['select']:[]),...(hasCheckbox(ir.ui)?['checkbox']:[]),...(hasTextarea(ir.ui)?['textarea']:[]),...(hasClasses(ir.ui)?['setClass','classBinding']:[]),...(hotLists?['runRegionUntracked']:[]),'cell','computed','uninitializedBinding','element','rootElement','text','button','literalText','literalButton','input','when','repeat','mountBoundary','renderComponent','createComponentRoot','renderSlot'].map(name=>[name,fresh(`runtime_${name}`)]));
+  if(groups.length)runtime.createActionGroup=fresh('runtime_createActionGroup');
+  if(stateOwners.size)runtime.actionOwnerCell=fresh('runtime_actionOwnerCell');
+  if(ownerKeys.size)runtime.actionOwnerKey=fresh('runtime_actionOwnerKey');
   const runtimeChildren=ir.imports.filter(i=>i.path.endsWith('.eln')&&!i.typeOnly);
   const children=new Map(runtimeChildren.map(i=>[i.local,fresh(`child_${i.local}`)]));
   const detachedChildren=new Set(runtimeChildren.filter(i=>detachedImports.has(i.path)).map(i=>i.local));
   const fragment=(code,locals=new Map(),kind='expression')=>rewrite(ir,code,locals,kind,helpers);
+  const ownerRead=owner=>stateOwners.has(owner.name)?`${helpers.state}.${owner.name}.revision`:fragment(owner.expr);
+  const createDurableGroup=durableGroups.length?fresh('runtime_createDurableGroup'):null;
+  const managedActions=ir.actions.filter(action=>!durableMembers.has(action.name));
+  const managedFactories=new Map(groups.length?managedActions.map(action=>[action.name,fresh('actionBody')]):[]);
+  const managedBodies=groups.length?managedActions.map(action=>{
+    const lease=fresh('actionLease');
+    const call=(method,target)=>ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(lease),method),undefined,[target]);
+    const locals=new Map(ir.states.map(state=>[state.name,()=>ts.factory.createPropertyAccessExpression(
+      call('bindCell',ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(helpers.state),state.name)),'value')]));
+    for(const member of ir.actions)locals.set(member.name,()=>member.group
+      ?call('bindAction',ts.factory.createIdentifier(member.name))
+      :call('bindHelper',ts.factory.createIdentifier(managedFactories.get(member.name))));
+    // A member sees its own group through the invocation, which owns the signal.
+    if(action.group)locals.set(action.group,()=>call('bindGroup',ts.factory.createIdentifier(action.group)));
+    const implementation=action.group
+      ?`function* (${action.params}) ${managedGeneratorBody(action,{lease,fresh})}`
+      :action.functionSource.replace(/^(async )?function [^(]+/,(_,asyncKeyword='')=>`${asyncKeyword}function `);
+    // The property key names the function for stack traces without adding a
+    // binding that would shadow the action inside its own body.
+    return fragment(`function ${managedFactories.get(action.name)}(${lease}) { return {${action.name}: ${implementation}}.${action.name}; }`,locals,'statement');
+  }):[];
+  // A durable member reads its operation at mount, builds the request when it
+  // is called, and resumes its body after the awaited call when the outcome
+  // arrives, possibly in a later page with the stored parameters.
+  const durableBodies=ir.actions.filter(action=>durableMembers.has(action.name)).map(action=>{
+    const {resultName,callee,argument,rest}=action.durable;
+    const outcome=resultName??fresh('outcome');
+    const params=action.params.trim();
+    return `    const ${action.name} = ${fragment(`${action.group}.member(${JSON.stringify(action.name)}, () => (${callee}), (${params}) => (${callee})(${argument}), function (${outcome}${params?', '+params:''}) {${rest}})`)};`;
+  });
   const args=fresh('args'),value=fresh('value'),mount=fresh('mount'),render=fresh('render');
   const seed=hot?fresh('hotSeed'):null,capture=hot?fresh('hotCapture'):null;
   const rows=hotLists?fresh('hotRows'):null;
@@ -154,6 +203,7 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     '// Elnor Spike 003 generated output. Bounded experimental grammar.',
     ...ordinaryImports,
     `import {${Object.entries(runtime).map(([name,alias])=>`${name} as ${alias}`).join(',')}} from ${JSON.stringify(runtimeImport)};`,
+    ...(createDurableGroup?[`import {createDurableGroup as ${createDurableGroup}} from ${JSON.stringify(durableRuntimeImport)};`]:[]),
     ...runtimeChildren.map(x=>{
       const target=componentImports?componentImports.get(x.path):'./'+path.basename(x.path,'.eln')+'.mjs';
       if(!target)throw Error(`ELN-SURFACE-GRAPH: Missing component '${x.path}' in the emission graph`);
@@ -166,14 +216,28 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
     `function ${render}(${helpers.root},${helpers.props},${helpers.handlers},${helpers.slots},${helpers.scope}${hot?`,${seed},${capture}${rows?','+rows:''}`:''}) {`,
     `    const ${helpers.state} = {${stateSentinels}};`,
     `    const ${helpers.calc} = {${calcSentinels}};`,
+    ...groups.filter(group=>ownerKeys.has(group.name)).map(group=>
+      `    const ${ownerKeys.get(group.name)} = ${runtime.actionOwnerKey}(() => [${group.owners.map(ownerRead).join(', ')}], ${helpers.scope});`),
+    ...groups.map(group=>{
+      const owner=ownerKeys.has(group.name)?`${ownerKeys.get(group.name)}.value`:ownerRead(group.owners[0]);
+      return `    const ${group.name} = ${runtime.createActionGroup}(${JSON.stringify(group.policy)}, () => (${owner}), ${helpers.scope}${groupOptions(group)});`;
+    }),
+    ...durableGroups.map(group=>{
+      const owner=group.owners.length===1?fragment(group.owners[0].expr):`[${group.owners.map(owner=>fragment(owner.expr)).join(', ')}]`;
+      return `    const ${group.name} = ${createDurableGroup}(${JSON.stringify(group.journal)}, () => (${owner}), ${helpers.scope});`;
+    }),
+    ...ir.actions.filter(action=>action.group&&!durableMembers.has(action.name)).map(action=>`    const ${action.name} = ${action.group}.action(${managedFactories.get(action.name)}, ${JSON.stringify(action.name)});`),
+    ...durableBodies,
     ...ir.states.map((s,index)=>{
       const init=fragment(s.expr);
-      return `    ${helpers.state}.${s.name} = ${runtime.cell}(${hot?`${seed} ? ${seed}[${index}] : (${init})`:init});`;
+      const makeCell=stateOwners.has(s.name)?runtime.actionOwnerCell:runtime.cell;
+      return `    ${helpers.state}.${s.name} = ${makeCell}(${hot?`${seed} ? ${seed}[${index}] : (${init})`:init});`;
     }),
     ...(hot?[`    ${capture}?.(() => [${ir.states.map(s=>`${helpers.state}.${s.name}.value`).join(',')}]);`]:[]),
     ...ir.calcs.map(d=>`    ${helpers.calc}.${d.name} = ${runtime.computed}(() => (${fragment(d.expr)}),${helpers.scope});`),
     `    const ${helpers.emit} = {${ir.events.map(e=>`${e.name}: (...${args}) => ${helpers.handlers}.${e.name}?.(...${args})`).join(',')}};`,
-    ...ir.actions.map(a=>fragment(a.functionSource,new Map(),'statement')),
+    ...ir.actions.filter(action=>!action.group).map(a=>fragment(a.functionSource,new Map(),'statement')),
+    ...managedBodies,
     ...(ir.disposal?[`    ${helpers.scope}.own(() => { ${fragment(ir.disposal.expr)}; });`]:[]),
   ];
   function emit(nodes,parent,owner,locals=new Map(),indent='    ',exclusive=false,returnRoot=false,hotRow){
@@ -182,6 +246,11 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
       if(n.kind==='container'){
         lines.push(`${indent}const ${unique} = ${returnRoot?runtime.rootElement:runtime.element}(${parent},${JSON.stringify(n.tag)},${JSON.stringify(classLiteral(n.classExpr)??n.className)});`);
         if(n.classExpr!==undefined&&classLiteral(n.classExpr)===undefined)lines.push(`${indent}${runtime.classBinding}(${unique},()=>(${fragment(n.classExpr,locals)}),${owner});`);
+        if(n.disabledExpr!==undefined){
+          const literal=disabledLiteral(n.disabledExpr);
+          lines.push(literal!==undefined?`${indent}${runtime.setDisabled}(${unique},${literal});`
+            :`${indent}${runtime.disabledBinding}(${unique},()=>(${fragment(n.disabledExpr,locals)}),${owner});`);
+        }
         if(n.submitExpr!==undefined){
           const reset=n.resetExpr===undefined?'undefined':'()=>{'+fragment(n.resetExpr,locals)+';}';
           const focus=n.focusInvalidExpr===undefined?'':',()=>('+fragment(n.focusInvalidExpr,locals)+')';
@@ -305,15 +374,70 @@ function generateLegacy(ir,{moduleImports=new Map(),componentImports,detachedImp
 }
 export function generate(ir,options={}){
  const legacy=generateLegacy(ir,options);let context;
- if(options.hot)return legacy;
- const lowerOpaque=(code,locals=[],indexed=[],action=null)=>{
+ if(options.hot||ir.actionGroups.length)return legacy;
+ // Region code is appended to the general module, which already declares
+ // the TypeScript downlevel helpers its own bodies need, such as
+ // __addDisposableResource for using. A lowered expression drops those helper
+ // statements only when the module declares them.
+ const loweredExpression=(js,name,message)=>{
+  const sf=ts.createSourceFile(name,js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const helper=st=>ts.isVariableStatement(st)&&st.declarationList.declarations.every(d=>ts.isIdentifier(d.name)&&/^__[A-Za-z]+$/.test(d.name.text)&&new RegExp(`\\b${d.name.text}\\b\\s*=`).test(legacy));
+  const statements=sf.statements.filter(st=>!helper(st));
+  if(statements.length!==1||!ts.isExpressionStatement(statements[0]))throw Error(message);
+  return statements[0].expression.getText(sf);
+ };
+ const lowerOpaque=(code,locals=[],indexed=[],action=null,closure=null)=>{
   const ctx=action?.context??(context??=nameAllocator(ir.source+legacy)('regionContext'));
+  if(closure)return lowerClosure(code,ctx,action,closure);
   const read=slot=>()=>ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier(ctx),'read'),undefined,[ts.factory.createNumericLiteral(slot)]);
   const indexedReads=new Map(indexed.map(([name,slot])=>[name,read(slot)]));
-  const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText,sf=ts.createSourceFile('opaque.js',js,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
-  if(sf.statements.length!==1||!ts.isExpressionStatement(sf.statements[0]))throw Error('ELN-REGION: opaque expression lowering failed');return {param:ctx,read:sf.statements[0].expression.getText(sf)};
+  const rewritten=rewrite(ir,code,new Map([...locals.map(([name,slot])=>[name,read(slot)]),...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]),'expression',{props:ctx+'.props',state:ctx+'.state',calc:ctx+'.calc',emit:ctx+'.emit',indexedReads}),js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return {param:ctx,read:loweredExpression(js,'opaque.js','ELN-REGION: opaque expression lowering failed')};
  };
- const mounted=attachRegion(ir,legacy,{...options,lowerOpaque});return options.ownedRegionPlan?attachRegion(ir,mounted,{...options,lowerOpaque,regionPlan:options.ownedRegionPlan,ownedExport:true}):mounted;
+ // An expression that creates functions reads each slot through the handle
+ // of the part that owns it, a row for row items and the component instance
+ // for state and calcs. Reads stay tracked while the part is open; a closure
+ // that runs after the part closes reads the frozen values, as general cells.
+ const lowerClosure=(code,ctx,action,closure)=>{
+  const fresh=nameAllocator(ir.source+legacy+code),props=fresh('closureProps');
+  const cells=closure.slots.filter(([name])=>code.includes(name)).map(([name,slot,group])=>[name,slot,group,fresh(`cell_${name}`)]);
+  const usesProps=closure.props.some(name=>code.includes(name));
+  const decls=[...(usesProps?[`const ${props} = ${closure.alias}(${ctx}, ${closure.instance.slot}, ${closure.instance.group}).props;`]:[]),
+   ...cells.map(([,slot,group,cell])=>`const ${cell} = ${closure.alias}(${ctx}, ${slot}, ${group}).cell(${slot});`)];
+  const calls=(closure.calls??[]).filter(([name])=>code.includes(name)).map(([name,index])=>[name,index,fresh(`action_${name}`)]);
+  decls.push(...calls.map(([,index,reference])=>`const ${reference} = ${closure.alias}(${ctx}, ${closure.instance.slot}, ${closure.instance.group}).action(${closure.table}, ${index});`));
+  const map=new Map([...closure.props.map(name=>[name,`${props}.${name}`]),...cells.map(([name,,,cell])=>[name,`${cell}.value`]),...calls.map(([name,,reference])=>[name,reference]),
+   ...(action?.parameters??[]).map(([name,index])=>[name,()=>ts.factory.createElementAccessExpression(ts.factory.createIdentifier(action.args),ts.factory.createNumericLiteral(index))])]);
+  const rewritten=rewrite({params:[],states:[],calcs:[]},`(() => {\n${decls.join('\n')}\nreturn (${code});\n})()`,map,'expression',{emit:`${ctx}.emit`});
+  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return {param:ctx,read:loweredExpression(js,'closure.js','ELN-REGION: closure expression lowering failed')};
+ };
+ // A general action keeps its body and runs against the instance handle of
+ // the region runtime. States and calcs become accessors of that handle, other
+ // actions become its stable references and root props come from it, so reads,
+ // writes, calls and closures behave as in the general renderer, also after the
+ // instance closes or unmounts.
+ const lowerOpaqueAction=(action,{instance,table})=>{
+  const fresh=nameAllocator(ir.source+action.params+action.body),ctx=fresh('regionAction'),handle=fresh('actionInstance'),props=fresh('regionProps');
+  const named=([name])=>(action.params+action.body).includes(name);
+  const slots=[...action.states,...action.calcs].filter(named).map(([name,slot])=>[name,slot,fresh(`state_${name}`)]);
+  const calls=action.calls.filter(named).map(([name,index])=>[name,index,fresh(`action_${name}`)]);
+  const usesProps=action.props.some(name=>named([name]));
+  const locals=new Map([
+   ...action.props.map(name=>[name,`${props}.${name}`]),
+   ...slots.map(([name,,cell])=>[name,`${cell}.value`]),
+   ...calls.map(([name,,reference])=>[name,reference]),
+  ]);
+  const cells=[`const ${handle} = ${instance}(${ctx}, ${action.instance.slot}, ${action.instance.group});`,
+   ...(usesProps?[`const ${props} = ${handle}.props;`]:[]),
+   ...slots.map(([,slot,cell])=>`const ${cell} = ${handle}.cell(${slot});`),
+   ...calls.map(([,index,reference])=>`const ${reference} = ${handle}.action(${table}, ${index});`)];
+  const code=`${action.async?'async ':''}(${[ctx,...(action.params?[action.params]:[])].join(', ')}) => {\n${cells.join('\n')}\n${action.body.slice(1,-1)}\n}`;
+  const rewritten=rewrite({params:[],states:[],calcs:[]},code,locals,'expression',{emit:`${handle}.emit`});
+  const js=ts.transpileModule('('+rewritten+');',{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+  return loweredExpression(js,'action.js','ELN-REGION: general action lowering failed');
+ };
+ const mounted=attachRegion(ir,legacy,{...options,lowerOpaque,lowerOpaqueAction});return options.ownedRegionPlan?attachRegion(ir,mounted,{...options,lowerOpaque,lowerOpaqueAction,regionPlan:options.ownedRegionPlan,ownedExport:true}):mounted;
 }
 function scalarHotContract(ir,collections){
   if(ir.actions.some(action=>action.async))return undefined;
@@ -369,11 +493,13 @@ function hotExperiment(ir,plan,sources){
   owners.sort((left,right)=>left.name<right.name?-1:left.name>right.name?1:0);
   return {contract:hotContract([root,...owners.map(owner=>owner.leaf)],owners.map(owner=>owner.placement)),hotLists,childKeys};
 }
-function prepareGraph(graph,{hotEntry}={}){
+// regionBackend: false compiles every component with the general renderer,
+// the reference that region behavior is compared against.
+function prepareGraph(graph,{hotEntry,regionBackend=false}={}){
   const planner=createModulePlanner(),files=new Map(),records=surfaceRecords(graph),components=surfaceOutputs(records);
   const outputs=new Map(components.map(component=>[sourceKey(component.source),component]));
   const sources=new Map(records.map(ir=>[sourceKey(ir.filename),ir]));
-  const regionPlans=new Map(records.map(ir=>[sourceKey(ir.filename),analyzeRegion(ir,{components:sources})])),ownedPlans=new Map(),required=new Set();
+  const regionPlans=new Map(records.map(ir=>[sourceKey(ir.filename),regionBackend?analyzeRegion(ir,{components:sources}):{eligible:false,failures:['region-backend-disabled']}])),ownedPlans=new Map(),required=new Set();
   const requireChildren=plan=>{for(const c of plan.components??[]){const key=sourceKey(c.source);if(required.has(key))continue;required.add(key);const child=analyzeSequentialRegion(sources.get(key),{components:sources});if(!child.eligible)throw Error('ELN-REGION: owned child proof missing');ownedPlans.set(key,child);requireChildren(child);}};for(const plan of regionPlans.values())if(plan.eligible&&plan.mode==='sequential')requireChildren(plan);
   function planImports(ir){
     const moduleImports=new Map(),paths=runtimeModulePaths(projectSurface(ir.source,ir.filename));
@@ -392,8 +518,10 @@ function prepareGraph(graph,{hotEntry}={}){
   const hotRoot=hotEntry? sources.get(hotEntry):undefined;
   const derived=hotRoot&&moduleRevision?proveDerivedListReplacement(hotRoot,sources,planned.get(hotRoot),renderModuleProofs):undefined;
   const experiment=derived?{contract:derived}
-    :hotRoot?hotExperiment(hotRoot,regionPlans.get(hotEntry),sources):undefined;
-  let regionUsed=false;
+    // The hot experiment emits general code but uses the region analysis as
+    // its proof of a static shape, so it runs even when regions do not emit.
+    :hotRoot?hotExperiment(hotRoot,regionBackend?regionPlans.get(hotEntry):analyzeRegion(hotRoot,{components:sources}),sources):undefined;
+  let regionUsed=false,durableUsed=false;
   for(const ir of records){
     const key=sourceKey(ir.filename),filename=outputs.get(key).file;
     const moduleImports=planned?.get(ir)??planImports(ir);
@@ -411,10 +539,13 @@ function prepareGraph(graph,{hotEntry}={}){
     const isEntry=hotEntry===key,hotChild=experiment?.childKeys?.has(key);
     const hot=Boolean(experiment&&(isEntry||hotChild));
     regionUsed ||= regionPlan.eligible&&!hot;
-    files.set(filename,generate(ir,{moduleImports,componentImports,detachedImports,regionPlan,hot,hotChild,hotLists:isEntry?experiment?.hotLists:undefined,ownedRegionPlan:ownedPlans.get(key),regionRuntimeImport:moduleSpecifier(filename,'region-runtime.mjs'),runtimeImport:moduleSpecifier(filename,'runtime.mjs')}));
+    durableUsed ||= ir.actionGroups.some(group=>group.policy==='durable');
+    files.set(filename,generate(ir,{moduleImports,componentImports,detachedImports,regionPlan,hot,hotChild,hotLists:isEntry?experiment?.hotLists:undefined,ownedRegionPlan:ownedPlans.get(key),regionRuntimeImport:moduleSpecifier(filename,'region-runtime.mjs'),runtimeImport:moduleSpecifier(filename,'runtime.mjs'),durableRuntimeImport:moduleSpecifier(filename,'durable-runtime.mjs')}));
   }
   for(const [filename,code] of sharedModules??planner.files())files.set(filename,code);
   files.set('runtime.mjs',fs.readFileSync(path.join(ROOT,'src/runtime.mjs'),'utf8'));
+  // Durable groups have their own runtime, emitted only when a component uses one.
+  if(durableUsed)files.set('durable-runtime.mjs',fs.readFileSync(path.join(ROOT,'src/durable-runtime.mjs'),'utf8'));
   let regionRuntime=null;
   if(regionUsed){
     const plans=[...regionPlans.values(),...ownedPlans.values()].filter(p=>p.eligible),features={forms:plans.some(p=>p.events.some(e=>e.type==='submit')),select:plans.some(p=>p.bindings.some(b=>b.kind==='select')),checked:plans.some(p=>p.bindings.some(b=>b.kind==='checked')),aria:plans.some(p=>p.bindings.some(b=>b.kind==='ariaBoolean')||p.nodes.some(n=>n.ariaBooleans)),disabled:plans.some(p=>p.bindings.some(b=>b.kind==='disabled')||p.nodes.some(n=>n.disabled!==undefined)),classes:plans.some(p=>p.bindings.some(b=>b.kind==='class')||p.nodes.some(n=>n.tag==='input'&&n.className)),lists:plans.some(p=>p.lists.length>0),components:plans.some(p=>p.components.length>0),blueprint:plans.some(p=>p.mode!=='sequential'),emits:plans.some(p=>p.emitNames?.length||(p.components??[]).some(c=>c.handlers?.length))};

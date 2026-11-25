@@ -1,5 +1,6 @@
 import {validateFormTopology} from './form-validation.mjs';
 import {validateComponent} from './component-validation.mjs';
+import {durableJournalPattern} from './durable-members.mjs';
 import {sourceKey as canonical,sourceImport} from './source-identity.mjs';
 
 // Pure validation: callers own source loading, recovery and persistence.
@@ -7,6 +8,16 @@ export function validateGraph(graph, {knownFiles = [...graph.keys()],moduleHost}
   const errors=[];
   const indexed=new Map([...graph].map(([file,ir])=>[canonical(file),ir]));
   const known=new Set(knownFiles.map(canonical));
+  // A journal name identifies stored intents for the whole application.
+  const journals=new Map();
+  for(const ir of graph.values())for(const group of ir.actionGroups??[]){
+    // An invalid name is already reported by the parser.
+    if(group.policy!=='durable'||!group.journalSpan||!durableJournalPattern.test(JSON.stringify(group.journal)))continue;
+    const first=journals.get(group.journal);
+    if(!first){journals.set(group.journal,{group,ir});continue;}
+    errors.push({code:'ELN-DURABLE-NAME',file:ir.filename,line:group.line,...group.journalSpan,
+      message:`Journal "${group.journal}" is already used by action group '${first.group.name}' in ${first.ir.name}. Choose a unique journal name`});
+  }
   for(const ir of graph.values()){
     errors.push(...validateComponent(ir,{moduleHost}));
     const imported=new Map();

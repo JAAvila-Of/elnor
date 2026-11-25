@@ -1,10 +1,10 @@
 // Editor-only recovery; the strict parser and emitted runtime are unchanged.
 import {getTs} from './typescript.mjs';
-import {parseSurface,supportsFieldError,supportsInputCallback} from './parser.mjs';
-const ts=getTs(),containers=['form','section','main','article','header','div','ul','li','footer','nav'];
-const tags=[...containers,'h1','h2','h3','p','strong','small','span','output','button','input','textarea','checkbox','select','submit','reset'];
+import {parseSurface,supportsDisabled,supportsFieldError,supportsInputCallback} from './parser.mjs';
+const ts=getTs(),containers=['form','section','main','article','header','div','ul','li','footer','nav','fieldset'];
+const tags=[...containers,'h1','h2','h3','p','strong','small','span','output','legend','button','input','textarea','checkbox','select','submit','reset'];
 const hostPattern=new RegExp('^[ \\t]*('+tags.join('|')+')[ \\t]+');
-function namesFor(tag){return ['class',...(['button','submit','reset','input','textarea','checkbox','select'].includes(tag)?['disabled']:[]),...(tag==='button'?['aria-pressed','aria-current']:[]),...(supportsFieldError(tag)?['error']:[]),...(tag==='form'?['focus-invalid']:[]),...(supportsInputCallback(tag)?['on-input']:[])];}
+function namesFor(tag){return ['class',...(supportsDisabled(tag)?['disabled']:[]),...(tag==='button'?['aria-pressed','aria-current']:[]),...(supportsFieldError(tag)?['error']:[]),...(tag==='form'?['focus-invalid']:[]),...(supportsInputCallback(tag)?['on-input']:[])];}
 const recoveryProperties = new Map([
  ['error',{name:'aria-pressed',key:'ariaPressed',originalKey:'error'}],
  ['focus-invalid',{name:'aria-pressed',key:'ariaPressed',originalKey:'focusInvalid'}],
@@ -31,7 +31,10 @@ function balanced(text,visible,start){
  return {end:text.length,unfinished:stack.length===1&&stack[0]==='('};
 }
 function realUiLine(source,line,tag){
- const block=(containers.includes(tag)||tag==='select')&&line.text.trimEnd().endsWith('{'),stub=tag==='form'&&block?'form .elnor-dom-completion-probe => undefined {':block?'div .elnor-dom-completion-probe {':'p "__elnor_dom_completion__"';
+ const block=(containers.includes(tag)||tag==='select')&&line.text.trimEnd().endsWith('{');
+ const stub=tag==='form'&&block?'form .elnor-dom-completion-probe => undefined {'
+  :block?(tag==='fieldset'?'fieldset':'div')+' .elnor-dom-completion-probe {'
+  :(tag==='legend'?'legend':'p')+' "__elnor_dom_completion__"';
  let tail=source.slice(line.start+line.text.length);
  if(tag==='select'&&block){const close=/^[ \t]*}[ \t]*\r?$/m.exec(tail);if(!close)return false;const body=tail.slice(0,close.index);if(body.split('\n').some(row=>row.trim()&&!row.trim().startsWith('//')&&!/^option\s/.test(row.trim())))return false;tail=body.replace(/^[ \t]*option[^\n]*/gm,'p "__elnor_option_probe__"')+tail.slice(close.index);}
  const candidate=source.slice(0,line.start)+stub+tail;

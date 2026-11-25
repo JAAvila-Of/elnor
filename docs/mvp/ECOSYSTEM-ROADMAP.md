@@ -146,7 +146,10 @@ written before HTTP, SQLite atomic results, same-key replay, stable ledger epoch
 status-first recovery and terminal acknowledgement across reload/process restart.
 Its browser journal assumes one writer; authentication, multi-tab coordination,
 retention operations and persistent Task desk integration are not established.
-`action.pending` in the design specification remains proposed.
+[Action groups](ASYNC-POLICY.md#action-groups) now run `single-flight` and
+`latest` in the general runtime and expose typed reactive state. Retirement
+never interrupts cleanup: awaited `finally`, `await using` and `for await`
+complete their cleanup after an invocation is retired.
 
 The [async policy guide](ASYNC-POLICY.md) closes the initial technical evaluation
 and separates demonstrated operation policies from the persistent application

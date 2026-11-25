@@ -7,11 +7,12 @@ const nativeCleanup=Symbol('nativeCleanup'), bulkSafe=Symbol('bulkSafe');
 let detachedByRegion=0;
 function ownNative(owner,cleanup,safe){owner?.own(cleanup,nativeCleanup,safe);}
 function detach(node){if(!detachedByRegion)node.remove();}
+// Every scope disposal runs this, so it allocates nothing unless a callback fails.
 function cleanAll(callbacks){
-  const errors=[];
-  for(const callback of callbacks){try{callback();}catch(error){errors.push(error);}}
-  if(errors.length===1)throw errors[0];
-  if(errors.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
+  let errors;
+  for(let i=0;i<callbacks.length;i++){const callback=callbacks[i];try{callback();}catch(error){(errors??=[]).push(error);}}
+  if(errors?.length===1)throw errors[0];
+  if(errors?.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
 }
 function failWithCleanup(error,cleanup,message='Mount failed and resource cleanup also failed'){
   try{cleanup();}catch(cleanupError){
@@ -41,11 +42,422 @@ function notify(subs){
   for(const e of subs){if(e[regionReactionKind]){if(!e.disposed)e.invalidate();}else pending.add(e);}
   if(pending.size&&!scheduled){scheduled=true;queueMicrotask(flush);}
 }
-export function cell(initial){
-  let val=initial;
-  const subs=new Set();
-  return {get value(){if(current&&!current.disposed){subs.add(current);current.deps.add(subs);}return val;},
-    set value(next){if(Object.is(val,next))return;val=next;notify(subs);}};
+// Cells, scopes and effects keep their methods on a prototype: a list row
+// creates several of each, and per-instance closures dominated its allocation.
+// Private fields keep the same encapsulation the closures provided.
+class Cell{
+  #value;#subs=new Set();
+  constructor(initial){this.#value=initial;}
+  get value(){const reader=current;if(reader&&!reader.disposed){this.#subs.add(reader);reader.deps.add(this.#subs);}return this.#value;}
+  set value(next){if(Object.is(this.#value,next))return;this.#value=next;notify(this.#subs);}
+}
+export function cell(initial){return new Cell(initial);}
+
+// Direct state owners get a new identity on every change, including A → B → A.
+export function actionOwnerCell(initial) {
+  const tracked = cell(initial);
+  let value = initial;
+  let revision = {};
+  return {
+    get value() { return tracked.value; },
+    set value(next) {
+      if (Object.is(value, next)) return;
+      value = next;
+      revision = {};
+      tracked.value = next;
+    },
+    get revision() { void tracked.value; return revision; }
+  };
+}
+
+// An owner expression or list reads a key that keeps its identity while every
+// element is equal by Object.is. It is computed on first read, so an owner may
+// refer to calcs declared after the group.
+export function actionOwnerKey(read, owner) {
+  let key, output;
+  return {
+    get value() {
+      output ??= computed(() => {
+        const next = read();
+        if (!key || key.length !== next.length || key.some((item, index) => !Object.is(item, next[index]))) key = next;
+        return key;
+      }, owner);
+      return output.value;
+    }
+  };
+}
+
+const idleAction = Object.freeze({status:'idle'});
+const pendingAction = Object.freeze({status:'pending'});
+
+// A managed body yields ordinary suspensions as plain values. Suspensions in
+// cleanup yield a CleanupStep: retirement never interrupts them. A Checkpoint
+// at the end of ordinary cleanup applies a retirement observed while the
+// cleanup was running, and carries the error pending at that point.
+class CleanupStep { constructor(value) { this.value = value; } }
+class Checkpoint { constructor(failure) { this.failure = failure; } }
+const noFailure = Object.freeze({});
+const disposalMessage = 'An error was suppressed during disposal';
+const isObject = value => value !== null && (typeof value === 'object' || typeof value === 'function');
+
+function getMethod(value, key) {
+  if (key === undefined) return undefined;
+  const method = value[key];
+  if (method == null) return undefined;
+  if (typeof method !== 'function') throw new TypeError(`${String(key.description ?? key)} is not a function`);
+  return method;
+}
+
+function suppressedError(error, suppressed) {
+  if (typeof SuppressedError === 'function') return new SuppressedError(error, suppressed, disposalMessage);
+  const hidden = value => ({value, writable:true, configurable:true});
+  return Object.defineProperties(new Error(disposalMessage), {name:hidden('SuppressedError'), error:hidden(error), suppressed:hidden(suppressed)});
+}
+
+function reportActionFailure(error) {
+  if (typeof globalThis.reportError === 'function') globalThis.reportError(error);
+  else queueMicrotask(() => { throw error; });
+}
+
+// Lowered form of the using and await using declarations of one block.
+// Disposal follows DisposeResources: reverse order, awaited async disposers,
+// and SuppressedError when disposal fails after an earlier failure.
+function disposables() {
+  const resources = [];
+  let failed = false, failure;
+  return {
+    use(value, async) {
+      if (value == null) {
+        if (async) resources.push({async});
+        return value;
+      }
+      if (!isObject(value)) throw new TypeError('A using declaration requires an object, null, or undefined');
+      let method;
+      if (async) {
+        method = getMethod(value, Symbol.asyncDispose);
+        const dispose = method ? undefined : getMethod(value, Symbol.dispose);
+        if (dispose) method = function() { Reflect.apply(dispose, this, []); };
+      } else {
+        method = getMethod(value, Symbol.dispose);
+      }
+      if (!method) throw new TypeError(`The value of a ${async ? 'await using' : 'using'} declaration is not disposable`);
+      resources.push({value, async, method});
+      return value;
+    },
+    fail(error) { failed = true; failure = error; },
+    *dispose() {
+      let needsAwait = false, hasAwaited = false;
+      while (resources.length) {
+        const {value, async, method} = resources.pop();
+        if (!async && needsAwait && !hasAwaited) {
+          yield new CleanupStep(undefined);
+          needsAwait = false;
+        }
+        if (!method) { needsAwait = true; continue; }
+        try {
+          const result = Reflect.apply(method, value, []);
+          if (async) {
+            hasAwaited = true;
+            yield new CleanupStep(result);
+          }
+        } catch (error) {
+          failure = failed ? suppressedError(error, failure) : error;
+          failed = true;
+        }
+      }
+      if (needsAwait && !hasAwaited) yield new CleanupStep(undefined);
+      if (failed) throw failure;
+    }
+  };
+}
+
+// Lowered form of for await. `next` resolves to true once the iterator is
+// done and otherwise stores the value. `close` follows AsyncIteratorClose
+// and skips iterators that finished or failed on their own.
+function asyncIteration(iterable) {
+  let iterator, sync = false;
+  const asyncMethod = getMethod(iterable, Symbol.asyncIterator);
+  if (asyncMethod) {
+    iterator = Reflect.apply(asyncMethod, iterable, []);
+  } else {
+    const syncMethod = getMethod(iterable, Symbol.iterator);
+    if (!syncMethod) throw new TypeError('The value of for await is not async iterable');
+    iterator = Reflect.apply(syncMethod, iterable, []);
+    sync = true;
+  }
+  if (!isObject(iterator)) throw new TypeError('The iterator is not an object');
+  const nextMethod = iterator.next;
+  const record = {open:true, failed:false, value:undefined};
+  const finish = () => { record.open = false; };
+  // Returns true when the iterator is done and otherwise stores the value.
+  const read = step => {
+    if (!isObject(step)) throw new TypeError('The iterator result is not an object');
+    if (step.done) { finish(); return true; }
+    record.value = step.value;
+    return false;
+  };
+  const closeSync = () => {
+    try { const method = iterator.return; if (method != null) Reflect.apply(method, iterator, []); } catch {}
+  };
+  // Sync iterables follow CreateAsyncFromSyncIterator: each value is awaited,
+  // a rejected value closes the sync iterator, and closing awaits once.
+  const nextSync = step => {
+    if (!isObject(step)) throw new TypeError('The iterator result is not an object');
+    const done = !!step.done, value = step.value;
+    let wrapper;
+    try { wrapper = Promise.resolve(value); }
+    catch (error) { if (!done) closeSync(); throw error; }
+    if (done) { finish(); return wrapper.then(() => true); }
+    return wrapper.then(
+      resolved => { record.value = resolved; return false; },
+      error => { finish(); closeSync(); throw error; });
+  };
+  record.next = () => {
+    try {
+      const step = Reflect.apply(nextMethod, iterator, []);
+      if (sync) return nextSync(step);
+      return Promise.resolve(step).then(result => {
+        try { return read(result); }
+        catch (error) { finish(); throw error; }
+      }, error => { finish(); throw error; });
+    } catch (error) {
+      finish();
+      throw error;
+    }
+  };
+  record.fail = () => { record.failed = true; };
+  // After a throw completion, failures while closing are ignored and the
+  // original error is kept.
+  record.close = function* () {
+    if (!record.open) return;
+    finish();
+    const failed = record.failed;
+    let result;
+    try {
+      const method = getMethod(iterator, 'return');
+      if (sync) {
+        if (!method) { yield new CleanupStep(undefined); return; }
+        result = Reflect.apply(method, iterator, []);
+        if (!isObject(result)) throw new TypeError('The iterator return result is not an object');
+        void result.done;
+        yield new CleanupStep(result.value);
+        return;
+      }
+      if (!method) return;
+      result = yield new CleanupStep(Reflect.apply(method, iterator, []));
+    } catch (error) {
+      if (failed) return;
+      throw error;
+    }
+    if (!failed && !isObject(result)) throw new TypeError('The iterator return result is not an object');
+  };
+  return record;
+}
+
+const managedHelpers = Object.freeze({
+  cleanup: value => new CleanupStep(value),
+  checkpoint: failure => new Checkpoint(failure),
+  none: noFailure,
+  disposables,
+  asyncIteration
+});
+
+export function createActionGroup(policy, readOwner, ownerScope, {capacity = 100, timeout = null, debounce = null} = {}) {
+  const active = cell(null);
+  let disposed = false;
+  let owner;
+  const records = new Set();
+  // keep-latest and queue hold calls made while an invocation is running.
+  // keep-latest keeps only the newest; queue keeps up to `capacity`, in order.
+  // A new owner or disposal drops them, and a dropped call resolves to undefined.
+  const waiting = [];
+  const dropWaiting = () => { for (const call of waiting.splice(0)) call.resolve(undefined); };
+  const startWaiting = () => {
+    while (waiting.length) {
+      const next = waiting.shift();
+      if (!disposed && !ownerScope.disposed && Object.is(next.owner, readOwner())) {
+        next.resolve(next.start());
+        return;
+      }
+      next.resolve(undefined);
+    }
+  };
+
+  function dispose() {
+    disposed = true;
+    active.value = null;
+    for (const record of records) record.value = null;
+    dropWaiting();
+  }
+  ownerScope.own(dispose);
+
+  function action(createBody, name) {
+    const record = cell(null);
+    records.add(record);
+    const visible = () => {
+      const entry = record.value;
+      return entry && Object.is(entry.owner, readOwner()) ? entry.outcome : idleAction;
+    };
+
+    async function run(...args) {
+      if (disposed || ownerScope.disposed) return;
+      const currentOwner = readOwner();
+      const previous = active.value;
+      if (policy === 'single-flight' && previous && Object.is(owner, currentOwner)) return;
+      if (policy === 'keep-latest' || policy === 'queue') {
+        if (!Object.is(owner, currentOwner)) dropWaiting();
+        else if (previous) {
+          if (policy === 'keep-latest') dropWaiting();
+          else if (waiting.length >= capacity) return;
+          return new Promise(resolve => { waiting.push({owner:currentOwner, resolve, start:() => run.apply(this, args)}); });
+        }
+      }
+      if (!Object.is(owner, currentOwner)) {
+        owner = currentOwner;
+        for (const other of records) other.value = null;
+      } else if (previous && previous.record !== record) {
+        previous.record.value = null;
+      }
+      const invocation = {record};
+      active.value = invocation;
+      record.value = {owner:currentOwner,outcome:pendingAction};
+      const isCurrent = () => !disposed && !ownerScope.disposed && active.value === invocation && Object.is(currentOwner, readOwner());
+      const cells = new WeakMap();
+      const actions = new WeakMap();
+      // The signal is created on first read. A watcher aborts it as soon as the
+      // invocation stops being current, and stops when the invocation ends.
+      let controller, stopWatching, groupView, retirement, timer;
+      const abort = () => {
+        stopWatching?.();
+        stopWatching = undefined;
+        if (!controller || controller.signal.aborted) return;
+        const tracking = current;
+        current = null;
+        try { controller.abort(retirement); } finally { current = tracking; }
+      };
+      const signal = () => {
+        if (!controller) {
+          controller = new AbortController();
+          if (!isCurrent()) abort();
+          else stopWatching = effect(() => { if (!isCurrent()) abort(); });
+        }
+        return controller.signal;
+      };
+      const lease = Object.assign(Object.create(managedHelpers), {
+        bindCell(target) {
+          if (!cells.has(target)) cells.set(target, {
+            get value() { return target.value; },
+            set value(value) { if (isCurrent()) target.value = value; }
+          });
+          return cells.get(target);
+        },
+        bindHelper(factory) {
+          if (!actions.has(factory)) actions.set(factory, factory(lease));
+          return actions.get(factory);
+        },
+        bindAction(target) {
+          if (!actions.has(target)) actions.set(target, new Proxy(target, {
+            apply(action, receiver, args) { if (isCurrent()) return Reflect.apply(action, receiver, args); }
+          }));
+          return actions.get(target);
+        },
+        bindGroup(target) {
+          return groupView ??= Object.freeze({
+            get pending() { return target.pending; },
+            get signal() { return signal(); }
+          });
+        }
+      });
+      // A timeout retires the invocation like an owner change, reports a
+      // TimeoutError on the member and frees the group at once, even if the
+      // awaited work never settles. It starts with the body, after any debounce.
+      const startTimeout = () => { if (timeout !== null) timer = setTimeout(() => {
+        if (!isCurrent()) return;
+        retirement = new DOMException(`The action timed out after ${timeout} ms`, 'TimeoutError');
+        record.value = {owner:currentOwner,outcome:{status:'error',error:retirement}};
+        abort();
+        active.value = null;
+        startWaiting();
+      }, timeout); };
+      const fail = error => { record.value = {owner:currentOwner,outcome:{status:'error',error}}; };
+      // Rejections delivered at ordinary suspensions belong to awaited work.
+      // Anything else escaping a retired invocation is a cleanup failure.
+      let awaitedFailures;
+      try {
+        // debounce: a newer call during the quiet period retires this one
+        // before its body runs.
+        if (debounce !== null) {
+          await new Promise(resolve => { setTimeout(resolve, debounce); });
+          if (!isCurrent()) return;
+        }
+        startTimeout();
+        let step;
+        try {
+          const iterator = createBody(lease).apply(this, args);
+          let retired = false;
+          step = iterator.next();
+          while (!step.done) {
+            const yielded = step.value;
+            if (yielded instanceof Checkpoint) {
+              if (retired || isCurrent()) step = iterator.next();
+              else {
+                retired = true;
+                abort();
+                const {failure} = yielded;
+                if (failure !== noFailure && !awaitedFailures?.has(failure)) reportActionFailure(failure);
+                step = iterator.return();
+              }
+              continue;
+            }
+            const cleanup = yielded instanceof CleanupStep;
+            let value, failed = false;
+            try { value = await (cleanup ? yielded.value : yielded); }
+            catch (error) { value = error; failed = true; }
+            if (!cleanup && !retired && !isCurrent()) {
+              retired = true;
+              abort();
+              step = iterator.return();
+              continue;
+            }
+            if (failed && !cleanup) (awaitedFailures ??= new Set()).add(value);
+            step = failed ? iterator.throw(value) : iterator.next(value);
+          }
+        } catch (error) {
+          if (isCurrent()) fail(error);
+          else if (!awaitedFailures?.has(error)) reportActionFailure(error);
+          return;
+        }
+        let result;
+        try { result = await step.value; }
+        catch (error) {
+          if (isCurrent()) fail(error);
+          return;
+        }
+        if (isCurrent()) {
+          record.value = {owner:currentOwner,outcome:{status:'success',result}};
+          return result;
+        }
+      } finally {
+        clearTimeout(timer);
+        stopWatching?.();
+        if (active.value === invocation) {
+          active.value = null;
+          startWaiting();
+        }
+      }
+    }
+
+    // The action name labels the driver in async stack traces and the console.
+    return Object.defineProperties(run, {
+      ...(name === undefined ? {} : {name:{value:name, configurable:true}}),
+      status:{get:()=>visible().status},
+      pending:{get:()=>visible().status === 'pending'},
+      result:{get:()=>visible().result},
+      error:{get:()=>visible().error}
+    });
+  }
+
+  return {action, get pending() { return !!active.value && Object.is(owner, readOwner()); }};
 }
 // Generated components install these sentinels before running initializers.
 // A deferred closure sees the real cell once initialization replaces it.
@@ -53,31 +465,44 @@ export function uninitializedBinding(binding){
   const fail=()=>{throw Object.assign(new ReferenceError(
     `ELN-INIT: Cannot access ${binding.kind} '${binding.binding}' before initialization (${binding.file})`
   ),binding,{code:'ELN-INIT'});};
-  return {get value(){return fail();},set value(_next){fail();}};
+  return {get value(){return fail();},set value(_next){fail();},get revision(){return fail();}};
 }
-export function scope(){
-  const disposers=[];
-  let disposed=false,safe=true,checks=null;
-  return {get [bulkSafe](){return safe&&(!checks||checks.every(check=>check()));},
-    own(fn,kind,check){
-      if(disposed){fn();return fn;}
-      if(kind!==nativeCleanup)safe=false;
-      if(check)(checks??=[]).push(check);
-      disposers.push(fn);return fn;
-    },dispose(){
-    if(disposed)return;disposed=true;
-    checks=null;
-    try{cleanAll(disposers.reverse());}finally{disposers.length=0;}
-  }};
+class Scope{
+  #disposers=[];#disposed=false;#safe=true;#checks=null;
+  get disposed(){return this.#disposed;}
+  get [bulkSafe](){return this.#safe&&(!this.#checks||this.#checks.every(check=>check()));}
+  own(fn,kind,check){
+    if(this.#disposed){fn();return fn;}
+    if(kind!==nativeCleanup)this.#safe=false;
+    if(check)(this.#checks??=[]).push(check);
+    this.#disposers.push(fn);return fn;
+  }
+  dispose(){
+    if(this.#disposed)return;this.#disposed=true;
+    this.#checks=null;
+    try{cleanAll(this.#disposers.reverse());}finally{this.#disposers.length=0;}
+  }
 }
-export function effect(fn, owner){
-  const e={deps:new Set(),disposed:false,run(){
+export function scope(){return new Scope();}
+function unsubscribe(subscribers){subscribers.delete(this);}
+const stoppedDeps=new Set();
+class Reaction{
+  constructor(fn){this.deps=new Set();this.disposed=false;this.fn=fn;}
+  run(){
     for(const dep of this.deps)dep.delete(this);
     this.deps.clear();const prev=current;current=this;
-    try{fn();}finally{current=prev;}
-    if(this.deps.size===0)fn=null;
-  }};
-  const dispose=()=>{e.disposed=true;pending.delete(e);for(const dep of e.deps)dep.delete(e);e.deps.clear();fn=null;};
+    // Call without a receiver, as a plain callback.
+    const fn=this.fn;try{fn();}finally{current=prev;}
+    if(this.deps.size===0)this.fn=null;
+  }
+  // forEach with a shared callback avoids an iterator per stopped reaction, and
+  // the shared empty set avoids the new table Set.prototype.clear allocates.
+  // A stopped reaction never runs again and cells skip disposed readers, so
+  // nothing is ever added to stoppedDeps.
+  stop(){this.disposed=true;if(pending.size!==0)pending.delete(this);this.deps.forEach(unsubscribe,this);this.deps=stoppedDeps;this.fn=null;}
+}
+export function effect(fn, owner){
+  const e=new Reaction(fn),dispose=()=>e.stop();
   ownNative(owner,dispose);
   try{if(!e.disposed)e.run();}catch(error){dispose();throw error;}
   return dispose;
@@ -147,22 +572,25 @@ export function button(parent,read,run,owner){
   ownNative(owner,()=>node.removeEventListener('click',run));
   return node;
 }
+// Shared by both renderers: focus the first enabled invalid field of a form
+// once pending reactive work, including field error bindings, has run.
+export function focusInvalidWhenSettled(node,current){
+  if (!current() || !node.isConnected) return;
+  // A validation calc may schedule its field binding in a later batch.
+  if (scheduled) {
+    queueMicrotask(() => focusInvalidWhenSettled(node,current));
+    return;
+  }
+  for (const field of node.elements) {
+    if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName) ||
+        field.getAttribute('aria-invalid') !== 'true' || field.matches(':disabled')) continue;
+    field.focus();
+    if (field.getRootNode().activeElement === field) break;
+  }
+}
 export function formBinding(node,run,owner,reset,readFocusInvalid){
   let active=true,submission=0;
-  function focusWhenSettled(attempt) {
-    if (!active || attempt !== submission || !node.isConnected) return;
-    // A validation calc may schedule its field binding in a later batch.
-    if (scheduled) {
-      queueMicrotask(() => focusWhenSettled(attempt));
-      return;
-    }
-    for (const field of node.elements) {
-      if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(field.tagName) ||
-          field.getAttribute('aria-invalid') !== 'true' || field.matches(':disabled')) continue;
-      field.focus();
-      if (field.getRootNode().activeElement === field) break;
-    }
-  }
+  const focusWhenSettled=attempt=>focusInvalidWhenSettled(node,()=>active&&attempt===submission);
   const listener=event=>{
     if(!active)return;
     event.preventDefault();
@@ -195,27 +623,32 @@ export function input(parent,label,read,write,owner){
   return node;
 }
 
+// Field error messages are shared by both renderers: one id sequence and one
+// way to describe the field, so the same component produces the same DOM.
 let fieldErrorId = 0;
-export function fieldErrorBinding(parent, field, read, owner) {
-  const message = element(parent, 'span');
-  const doc = field.ownerDocument;
+export function setupFieldErrorMessage(message, doc) {
   let id;
   do { id = 'elnor-field-error-' + ++fieldErrorId; } while (doc.getElementById?.(id));
   message.setAttribute('id', id);
   message.setAttribute('class', 'elnor-field-error');
   message.setAttribute('aria-live', 'polite');
-  effect(() => {
-    const value = read();
-    if (typeof value !== 'string') throw new TypeError('ELN-FIELD-ERROR-TYPE: expected a string');
-    if (value) {
-      if (field.getAttribute('aria-invalid') !== 'true') field.setAttribute('aria-invalid', 'true');
-      if (field.getAttribute('aria-describedby') !== id) field.setAttribute('aria-describedby', id);
-    } else {
-      if (field.getAttribute('aria-invalid') !== null) field.removeAttribute('aria-invalid');
-      if (field.getAttribute('aria-describedby') !== null) field.removeAttribute('aria-describedby');
-    }
-    if(message.textContent!==value)message.textContent = value;
-  }, owner);
+}
+export function setFieldError(field, message, value) {
+  if (typeof value !== 'string') throw new TypeError('ELN-FIELD-ERROR-TYPE: expected a string');
+  const id = message.getAttribute('id');
+  if (value) {
+    if (field.getAttribute('aria-invalid') !== 'true') field.setAttribute('aria-invalid', 'true');
+    if (field.getAttribute('aria-describedby') !== id) field.setAttribute('aria-describedby', id);
+  } else {
+    if (field.getAttribute('aria-invalid') !== null) field.removeAttribute('aria-invalid');
+    if (field.getAttribute('aria-describedby') !== null) field.removeAttribute('aria-describedby');
+  }
+  if(message.textContent!==value)message.textContent = value;
+}
+export function fieldErrorBinding(parent, field, read, owner) {
+  const message = element(parent, 'span');
+  setupFieldErrorMessage(message, field.ownerDocument);
+  effect(() => setFieldError(field, message, read()), owner);
 }
 // Kept separate so existing input construction and its hot path stay intact.
 export function setChecked(node,value){if(typeof value!=='boolean')throw new TypeError('ELN-CHECKED-TYPE: checkbox binding must be a boolean');if(node.checked!==value)node.checked=value;}
@@ -326,12 +759,15 @@ function orderedRows(rows){
 // arbitrary user disposers must still observe ordinary per-row teardown.
 function canClearRegion(parent,end,rows){
   if(end.parentNode!==parent)return false;
-  let count=1;
-  for(const row of rows.values()){
-    if(!row.owner[bulkSafe])return false;
-    for(const node of row.nodes){if(node.parentNode!==parent)return false;count++;}
-  }
-  return parent.childNodes.length===count;
+  // Map.prototype.forEach avoids an iterator result per row.
+  let count=1,eligible=true;
+  rows.forEach(row=>{
+    if(!eligible)return;
+    if(!row.owner[bulkSafe]){eligible=false;return;}
+    const nodes=row.nodes;
+    for(let i=0;i<nodes.length;i++){if(nodes[i].parentNode!==parent){eligible=false;return;}count++;}
+  });
+  return eligible&&parent.childNodes.length===count;
 }
 function clearRegion(parent,end,rows,suppressDescendants=true){
   if(suppressDescendants)detachedByRegion++;
@@ -339,15 +775,23 @@ function clearRegion(parent,end,rows,suppressDescendants=true){
   try{
     // Eligibility already proves that every cleanup is runtime-owned. Release
     // all owners directly; per-row DOM callbacks would only be suppressed here.
-    const errors=[];
-    for(const row of rows.values()){try{row.owner.dispose();}catch(error){errors.push(error);}}
-    if(errors.length===1)throw errors[0];
-    if(errors.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
+    let errors;
+    rows.forEach(row=>{try{row.owner.dispose();}catch(error){(errors??=[]).push(error);}});
+    if(errors?.length===1)throw errors[0];
+    if(errors?.length>1)throw new AggregateError(errors,'Multiple resource cleanup failures');
   }
   catch(error){cleanupFailed=true;cleanupError=error;}
   finally{if(suppressDescendants)detachedByRegion--;}
   if(cleanupFailed)failWithCleanup(cleanupError,()=>parent.replaceChildren(end),'Region cleanup and DOM removal failed');
   parent.replaceChildren(end);
+}
+// A keyed row reads its nodes and move state through its part, which may
+// replace nodes with a range getter. Accessors live on the prototype.
+class ListRow{
+  constructor(item,part){this.item=item;this.part=part;this.owner=part.owner;this.index=-1;}
+  get nodes(){return this.part.nodes;}
+  get moving(){return this.part.moving;}
+  set moving(value){this.part.moving=value;}
 }
 export function repeat(parent,read,key,build,owner,exclusive=false,detached=false){
   const end=document.createComment('elnor:each');parent.append(end);
@@ -386,7 +830,7 @@ export function repeat(parent,read,key,build,owner,exclusive=false,detached=fals
           const part=detached?createRootPart(build,item,stage):createPart((fragment,childOwner)=>build(item,fragment,childOwner),stage,true);
           staged.delete(part);
           if(!active){clearPart(part);return;}
-          row={item,owner:part.owner,index:-1};Object.defineProperty(row,'nodes',{get:()=>part.nodes});Object.defineProperty(row,'moving',{get:()=>part.moving,set:value=>{part.moving=value;}});
+          row=new ListRow(item,part);
           staged.add(row);
         }else{
           if(row.index<last)increasing=false;last=row.index;
@@ -433,13 +877,23 @@ export function mountBoundary(target,render){
   return mountDisposer(root,created);
 }
 
+// defineProperty copies the descriptor, so one shared descriptor serves every
+// prop. The getters stay enumerable, non-configurable and without a setter.
+const propDescriptor={enumerable:true,get:undefined};
+function readOnlyProps(propReaders){
+  const props={};
+  for(const name in propReaders){
+    if(!Object.hasOwn(propReaders,name))continue;
+    propDescriptor.get=propReaders[name];
+    Object.defineProperty(props,name,propDescriptor);
+  }
+  propDescriptor.get=undefined;
+  return props;
+}
 // Child components get live, read-only getters for props. No parent re-render is
 // needed: reading a getter inside a child effect tracks the parent signal.
 export function mountComponent(parent, mountChild, propReaders, handlers, slots, owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   const cleanup=mountChild(parent,props,handlers,slots);
   owner?.own(cleanup);
 }
@@ -447,17 +901,11 @@ export function mountComponent(parent, mountChild, propReaders, handlers, slots,
 // Public mounts retain their own boundary; no DOM snapshot or nested disposer
 // is needed for a child whose caller already owns the region.
 export function renderComponent(parent,renderChild,propReaders,handlers,slots,owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   renderChild(parent,props,handlers,slots,owner);
 }
 export function createComponentRoot(renderChild,propReaders,handlers,slots,owner){
-  const props={};
-  for(const [name,reader] of Object.entries(propReaders)){
-    Object.defineProperty(props,name,{enumerable:true,get:reader});
-  }
+  const props=readOnlyProps(propReaders);
   return renderChild(null,props,handlers,slots,owner);
 }
 export function renderSlot(parent,renderer,owner){

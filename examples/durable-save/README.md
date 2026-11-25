@@ -1,0 +1,162 @@
+# Durable save example
+
+`DurableSave.eln` is [RecoverableSave](../recoverable-save/RecoverableSave.eln)
+written with a `durable` action group. The person sees the same thing: a
+draft, a Save button, a status label and a review step when someone else
+changed the note. `host.ts` creates the journal, the `notes.save` operation and
+its HTTP transport for one account. `provider_fixture.py` is the SQLite
+reference provider for tests. It binds 127.0.0.1 only and does not check the
+`Host` header or authenticate anyone, so it is a test fixture, not a server.
+
+The design is in [durable intents](../../docs/mvp/DURABLE-INTENTS-DESIGN.md),
+and the policy is described with the other groups in
+[choosing an async policy](../../docs/mvp/ASYNC-POLICY.md#durable-intents).
+
+## The view
+
+```elnor
+action group saving("note") durable "notes"
+
+action async save(edit: Note) in saving {
+  const outcome = await notes.save(edit);
+  if (outcome.status === "applied") {
+    revision = outcome.result.revision;
+    message = "";
+  } else if (outcome.status === "unavailable") {
+    message = "The save was received, but its result is no longer available.";
+  } else if (outcome.reason.kind === "conflict") {
+    conflict = outcome.reason.current;
+    draft = edit.text;
+    message = "Someone else changed this note. Review it before saving again.";
+  } else {
+    message = outcome.reason.message;
+  }
+}
+```
+
+Calling `save` stores the intent in the journal before anything is sent. The
+rest of the body runs when the provider decides the outcome, in this page or
+in a later one after a reload. The label is a `calc` over `save.status`, which
+a calc can read like any member status. Save is disabled while the intent is
+pending or blocked and during a review. On a conflict the body keeps the
+person's text in the draft and shows the provider's current text. "Keep my
+text" and "Use their text" take the current revision, and the next Save is a
+new intent with a new key.
+
+The owner is the string `"note"` because the provider keeps one note per
+account. An application with several notes would use the note's id.
+
+## The host
+
+```ts
+const {journal, notes} = createNotes({account, baseUrl});
+mount(root, {notes});
+const unconsumed = await journal.outcomes();
+const blocked = await journal.blocked();
+```
+
+`createNotes` starts the journal, which keeps its records in IndexedDB so that
+every tab of the browser profile sees one journal; the tests pass an in-memory
+`store` instead. Call `journal.stop()` before the session ends or changes, and
+create another journal for the next account. `stop()` closes the connection of
+the store the journal created by default, and a journal used after `stop()`
+opens it again. `await journal.forget()` removes the account's records in every
+tab, including writes that were never sent; it does not stop the journals of
+the same account in other tabs, which the host stops. The `X-Fixture-Account`
+header stands in for the session in this fixture. `journal.outcomes()` and
+`journal.blocked()` resolve to what no view consumed and what cannot be sent;
+the host decides what to show for them. Their `owner` is the owner as JSON
+text, `"note"` with its quotes here.
+
+## Building it and starting the provider
+
+```sh
+npm run build:project -- examples/durable-save/DurableSave.eln --out .elnor/durable-save
+python examples/durable-save/provider_fixture.py --db .elnor/durable-save/ledger.sqlite
+```
+
+The provider prints its port and epoch. Its stdin command `stop` shuts it down
+and `retire` replaces every retained answer with a marker, which the journal
+reports as `unavailable`. `--faults` enables the `X-Fixture-Fault` header
+(`before`, `after`, `rollback`) for tests only. The tests use
+`ELNOR_TEST_PYTHON` when it is set, otherwise `python` on Windows and `python3`
+elsewhere.
+
+## Tests
+
+[durable-save-surface.test.mjs](../../tests/durable-save-surface.test.mjs)
+compiles this example, mounts it on the fake DOM and runs it against the
+provider:
+
+- a reply lost after the commit, then an unmount and a new journal on the same
+  store: the new view shows `Saved` and the provider applied one effect;
+- a blocked record in the store: the view shows `Blocked`, Save stays disabled
+  and nothing is sent;
+- a conflict with a write made through another key: the view shows the other
+  text, and saving after "Keep my text" or "Use their text" applies with a new
+  key;
+- the view has no editor warnings or errors, and the view and the host stay
+  within 98 nonblank lines;
+- the limit of the type checks described below.
+
+The journal, the transport and the runtime have their own tests:
+[journal](../../tests/intents-journal.test.mjs),
+[HTTP and provider](../../tests/intents-http.test.mjs),
+[groups](../../tests/durable-groups.test.mjs),
+[types](../../tests/durable-types.test.mjs) and
+[provider](../../tests/durable-provider.test.mjs). They run in Node.js with a
+lock manager and an in-memory store passed by the test; Node.js has no
+IndexedDB, so there the IndexedDB store is only tested against a minimal fake
+of it. In headless Edge 157 the
+[acceptance](../../docs/mvp/DURABLE-INTENTS-DESIGN.md#results), including two
+tabs, passed all 26 checks in each of 5 consecutive runs at commit `c5ae4c2`,
+with no page errors. A forced kill of the browser or of the operating system
+with a pending intent was not tested.
+
+## Comparison with the handwritten version
+
+| | RecoverableSave | DurableSave |
+| --- | --- | --- |
+| Nonblank lines of view and client or host | 60 + 136 = 196 | 46 + 21 = 67 |
+| JS bytes, gzip-9 (sum of files) | 15133, 3398 | 46267, 14027 |
+
+The byte counts were measured on this branch with the same method for both:
+the compiled view module and entry, plus the client or host transpiled by
+TypeScript. DurableSave also counts `intents.mjs` (31079 bytes, 9231 gzip-9)
+and `durable-runtime.mjs` (8537 bytes, 2948 gzip-9), which every durable
+component of an application shares. `runtime.mjs` is left out of both. The
+[recovery journal](../../docs/mvp/RECOVERY-JOURNAL.md) reported 11039 JS bytes
+and 3815 gzip-9 for RecoverableSave with an earlier compiler. Neither number
+is minified, and neither is a CPU measurement.
+
+DurableSave does more than the handwritten version: it resumes the outcome
+after a reload without a "Check result" button, reports outcomes and blocked
+records to the host, admits under one lock per account scope and pauses when
+the provider refuses the session's account.
+
+## Limits
+
+- The resume point of a member is its `await`. The editor does not mark it
+  yet, and the language service has no hover or inlay hint for it.
+- The journal stores inputs, parameters, owners, results and rejection reasons
+  in plain text in origin storage, readable by any script of the origin. Do
+  not pass secrets as durable inputs.
+- The group's `pending` is false for a blocked intent, and a call is refused
+  while the owner's intent is pending or blocked. This view therefore disables
+  Save with `saving.pending || save.status === "blocked"`.
+- `save.status` is `idle` while another member of the same group and owner has
+  the pending or blocked intent, and calling `save` is refused. In a group
+  with several members, check the other members' status too. Before the
+  journal's first read the member reports `idle`; a call made then is still
+  checked against storage, so no write is lost.
+- The durable checks read declared types. `any` passes the owner and JSON
+  checks and `{}` passes the JSON checks, so the compiler cannot check what
+  those types hold.
+- Two tabs running different releases: a tab whose journal does not know an
+  operation, or knows an older version of it, leaves the records that the
+  newer tab admitted pending and unsent until a tab with the newer release
+  sends them. A record of an older version than the journal's is blocked.
+  An outcome of another version is not resumed by this view: it stays in
+  `journal.outcomes()` for the host and does not hold back the next one.
+- Browser storage clearing, real authentication and production retention are
+  outside this fixture.

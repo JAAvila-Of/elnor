@@ -34,6 +34,28 @@ test('styled leaves retain expression, label and binding ranges',()=>{
  const tricky=body.replace('h2 class=(tone)','h2 class=(({ x: "class=(a) => b" }).x)');assert.equal(parseSurface(tricky,'Controls.eln').ui[0].children[0].classExpr,'({ x: "class=(a) => b" }).x');
  const result=formatSurface(tricky);assert.deepEqual(result.diagnostics,[]);assert.deepEqual(formatSurface(applyFormatEdits(tricky,result.edits)).edits,[]);
 });
+test('fieldset accepts an optional first direct legend and formats it with its controls',()=>{
+ const source=body.replace('section {','fieldset class=(tone) {').replace('h2 class=(tone)','legend class=(tone)');
+ const ir=parseSurface(source,'Controls.eln');
+ assert.equal(ir.ui[0].tag,'fieldset');
+ assert.deepEqual(ir.ui[0].children.map(node=>node.tag??node.kind),['legend','p','input','button']);
+ const plan=analyzeSequentialRegion(parseSurface(source.replaceAll('class=(tone)','class=("group")'),'Controls.eln'));
+ assert.ok(plan.eligible,plan.reason);
+ const group=plan.nodes.findIndex(node=>node.tag==='fieldset');
+ assert.equal(plan.nodes.find(node=>node.tag==='legend').parent,group);
+ const formatted=formatSurface(source);
+ assert.deepEqual(formatted.diagnostics,[]);
+ assert.deepEqual(formatSurface(applyFormatEdits(source,formatted.edits)).edits,[]);
+ const invalid=[
+  source.replace('fieldset class=(tone)','section'),
+  source.replace('legend class=(tone) "Heading"','p "First"\n legend "Late"'),
+  source.replace('legend class=(tone) "Heading"','legend "First"\n legend "Second"'),
+  source.replace('legend class=(tone) "Heading"','if active {\n legend "Conditional"\n }'),
+ ];
+ for(const text of invalid)assert.throws(()=>parseSurface(text,'Controls.eln'),issue=>
+  issue.code==='ELN-LEGEND-POSITION'&&text.slice(issue.start,issue.start+issue.length)==='legend');
+ assert.doesNotThrow(()=>parseSurface(source.replace('legend class=(tone) "Heading"\n',''),'Controls.eln'));
+});
 test('styled leaves enforce string types in checker and mapped editor projection',t=>{
  const dir=fixture(t),file=path.join(dir,'Controls.eln'),source=body.replaceAll('class=(tone)','class=(42)'),ir=parseSurface(source,file),errors=typecheckGraph(new Map([[file,ir]]),path.join(dir,'check'));
  assert.equal(errors.filter(d=>d.code==='TS2345').length,3,JSON.stringify(errors));
@@ -52,7 +74,7 @@ test('native owned construction accepts eligible dynamic class tasks',async t=>{
  const dir=fixture(t),childFile=path.join(dir,'Child.eln'),parentFile=path.join(dir,'Parent.eln');
  const child=parseSurface('component Child(tone: string) {\n ui {\n section class=(tone) {\n p class=(tone) "Child"\n }\n }\n}',childFile);
  const parent=parseSurface('import Child from "./Child.eln";\ncomponent Parent(initialTone: string) {\n state tone = initialTone;\n action toggle() { tone = "active"; }\n ui {\n section {\n button "Toggle" => toggle()\n Child tone=(tone)\n }\n }\n}',parentFile);
- const graph=new Map([[parentFile,parent],[childFile,child]]),result=emitGraph(graph,path.join(dir,'out'));
+ const graph=new Map([[parentFile,parent],[childFile,child]]),result=emitGraph(graph,path.join(dir,'out'),{regionBackend:true});
  const sources=fs.readdirSync(path.join(dir,'out')).filter(n=>n.endsWith('.mjs')).map(n=>fs.readFileSync(path.join(dir,'out',n),'utf8'));
  assert.ok(sources.some(s=>s.includes('renderNativeRegionOwned')),'Expected specialized native owned builder for dynamic classes');
  setupDOM();const {mount}=await import(pathToFileURL(path.join(dir,'out/Parent.mjs'))),root=new FakeNode('root'),stop=mount(root,{initialTone:'idle'});t.after(stop);

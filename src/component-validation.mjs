@@ -2,13 +2,15 @@ import {getTs} from './typescript.mjs';
 import {bindSource} from './binding-analysis.mjs';
 import {projectSurface} from './language-projection.mjs';
 import {validateImports} from './import-validation.mjs';
+import {managedSuspensionDiagnostics} from './managed-action-lowering.mjs';
+import {durableMemberDiagnostics} from './durable-members.mjs';
 
 const ts = getTs();
 
 // Shared semantic checks and explicit generator boundaries. Keep compiler and
 // editor entry points consistent without treating spike gaps as language rules.
 export function validateComponent(ir,{moduleHost}={}) {
-  const errors = [];
+  const errors = [...managedSuspensionDiagnostics(ir), ...durableMemberDiagnostics(ir)];
   function report(code, message, span) {
     const start = span.start;
     if (errors.some(e => e.code === code && e.start === start && e.length === span.length)) return;

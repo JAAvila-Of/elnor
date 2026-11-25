@@ -1,0 +1,51 @@
+import type {Note, Notes} from "./host.js";
+
+component DurableSave(notes: Notes) {
+  state draft = "";
+  state revision = 0;
+  state conflict: Note | null = null;
+  state message = "";
+  calc label = {idle: "Ready", pending: "Saving", success: "Saved", rejected: "Rejected", unconfirmed: "Unknown result", blocked: "Blocked"}[save.status];
+
+  action group saving("note") durable "notes"
+
+  action async save(edit: Note) in saving {
+    const outcome = await notes.save(edit);
+    if (outcome.status === "applied") {
+      revision = outcome.result.revision;
+      message = "";
+    } else if (outcome.status === "unavailable") {
+      message = "The save was received, but its result is no longer available.";
+    } else if (outcome.reason.kind === "conflict") {
+      conflict = outcome.reason.current;
+      draft = edit.text;
+      message = "Someone else changed this note. Review it before saving again.";
+    } else {
+      message = outcome.reason.message;
+    }
+  }
+
+  action review(text: string) {
+    if (!conflict) return;
+    draft = text;
+    revision = conflict.revision;
+    conflict = null;
+    message = "";
+  }
+
+  ui {
+    section {
+      form => save({text: draft, revision}) {
+        input "Text" <-> draft
+        submit disabled=(saving.pending || save.status === "blocked" || conflict !== null) "Save"
+      }
+      small label
+      strong message
+      if conflict !== null {
+        p ("Their text: " + conflict.text)
+        button "Keep my text" => review(draft)
+        button "Use their text" => review(conflict.text)
+      }
+    }
+  }
+}

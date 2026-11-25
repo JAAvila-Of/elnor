@@ -10,6 +10,19 @@ test('property names appear after a bare DOM tag with host-specific snippets',t=
   const q=query(t,wrap(line));assert.deepEqual(q.items.map(i=>i.name).sort(),names);for(const entry of q.items){assert.equal(entry.kind,'property');assert.equal(entry.replacementSpan.file,q.file);assert.equal(entry.replacementSpan.start,q.at);assert.equal(entry.replacementSpan.length,0);assert.equal(entry.insertText,entry.name+'=(${1})');assert.equal(entry.isSnippet,true);}
  }
 });
+test('fieldset and legend complete class without hiding placement diagnostics',t=>{
+ const group=query(t,wrap('fieldset cl| {\n legend "Contact"\n input "Email" <-> label\n }'));
+ const caption=query(t,wrap('fieldset {\n legend cl| "Contact"\n input "Email" <-> label\n }'));
+ const disabled=query(t,wrap('fieldset dis| {\n legend "Contact"\n input "Email" <-> label\n }'));
+ assert.deepEqual(group.items.map(item=>item.name),['class']);
+ assert.deepEqual(caption.items.map(item=>item.name),['class']);
+ assert.deepEqual(disabled.items.map(item=>item.name),['disabled']);
+ const misplaced=wrap('fieldset {\n input "Email" <-> label\n legend "Contact"\n }');
+ caption.service.open(caption.file,misplaced);
+ const issue=caption.service.diagnostics(caption.file).find(item=>item.code==='ELN-LEGEND-POSITION');
+ assert.ok(issue);
+ assert.equal(misplaced.slice(issue.start,issue.start+issue.length),'legend');
+});
 test('on-input completes typed callbacks while preserving the field error expression',t=>{
  const partial=query(t,wrap('input error=(label) on-input=(flags.|'));
  assert.ok(partial.items.some(entry=>entry.name==='busy'));

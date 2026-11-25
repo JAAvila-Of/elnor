@@ -11,7 +11,7 @@ const original='component Badge(label: string) { ui { span label } }';
 const consumer='import Badge from "./Badge.eln"; component Screen() { ui { Badge label="Ready" } }';
 const extension=fileURLToPath(new URL('../editors/vscode/extension.cjs',import.meta.url));
 class Range { constructor(start,end){this.start=start;this.end=end;} }
-class Diagnostic { constructor(range,message){this.range=range;this.message=message;} }
+class Diagnostic { constructor(range,message,severity){this.range=range;this.message=message;this.severity=severity;} }
 class Location { constructor(uri,range){this.uri=uri;this.range=range;} }
 class TextEdit {static replace(range,newText){return {range,newText};}}
 class WorkspaceEdit {
@@ -41,7 +41,7 @@ async function fixture(t,{files={},initialDocuments=[]}={}){
   };
   const change=(doc,text)=>{doc.source=text;doc.version++;fire('change',{document:doc});};
   const close=doc=>{doc.isClosed=true;fire('close',doc);};
-  const vscode={Range,Diagnostic,Location,TextEdit,WorkspaceEdit,DiagnosticSeverity:{Error:0},ExtensionMode:{Test:3},Uri:{file:uri},
+  const vscode={Range,Diagnostic,Location,TextEdit,WorkspaceEdit,DiagnosticSeverity:{Error:0,Warning:1},ExtensionMode:{Test:3},Uri:{file:uri},
     RelativePattern:class{},window:{createOutputChannel:()=>({error:e=>errors.push(e),dispose(){}}),tabGroups:{all:[],onDidChangeTabs:listen('tabs')}},
     languages:{createDiagnosticCollection:()=>({set:(u,d)=>markers.set(u.fsPath,d),clear:()=>markers.clear(),delete:u=>markers.delete(u.fsPath),dispose(){}}),
       registerCompletionItemProvider:(_s,p)=>{providers.completion=p;return {dispose(){}};},
@@ -324,4 +324,28 @@ test('format provider exposes refusals/options errors and leaves TypeScript to i
   await assert.rejects(f.format(doc),/ELN-FORMAT-PARSE/);
   assert.deepEqual(await f.format(f.open('model.ts')),[]);
   assert.equal(fs.readFileSync(doc.uri.fsPath,'utf8'),formatExpected);
+});
+
+test('adapter publishes non-blocking diagnostics with warning severity',async t=>{
+  const orders=`component Orders(customer: {id: number}, load: (id: number) => Promise<void>) {
+  action group orders(customer) single-flight
+
+  action async refresh() in orders {
+    await load(customer.id);
+  }
+
+  ui {
+    section {
+      button "Refresh" => refresh()
+    }
+  }
+}
+`;
+  const f=await fixture(t,{files:{'Orders.eln':orders}}),doc=f.open('Orders.eln');
+  await f.api.testing.refreshDiagnostics();
+  const markers=f.markers.get(doc.uri.fsPath);
+  assert.deepEqual(markers.map(marker=>[marker.code,marker.severity]),[['ELN-ACTION-GROUP-OWNER-IDENTITY',1]]);
+  f.change(doc,orders.replace('orders(customer)','orders(customer.id)'));
+  await f.api.testing.refreshDiagnostics();
+  assert.deepEqual(f.markers.get(doc.uri.fsPath),[]);
 });

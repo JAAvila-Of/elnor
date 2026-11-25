@@ -1,0 +1,161 @@
+// Types of the intent journal in intents.mjs.
+
+declare const durableBrand: unique symbol;
+
+interface DurableTypes<I, R, E> {
+  readonly input: I;
+  readonly result: R;
+  readonly reason: E;
+}
+
+/** The outcome the provider decided for an intent. `late` is true when another page or tab admitted it. */
+export type DurableOutcome<R, E> =
+  | {status: 'applied'; result: R; late: boolean}
+  | {status: 'rejected'; reason: E; late: boolean}
+  | {status: 'unavailable'; late: boolean};
+
+/** The inert value a durable operation returns; only a durable member sends it. */
+export interface DurableRequest<I, R, E> {
+  readonly operation: string;
+  readonly input: I;
+  readonly [durableBrand]: DurableTypes<I, R, E>;
+}
+
+export interface DurableOperation<I, R, E> {
+  (input: I): DurableRequest<I, R, E>;
+  readonly [durableBrand]: DurableTypes<I, R, E>;
+}
+
+export type TransportAnswer =
+  | {kind: 'applied'; epoch: string; result: unknown}
+  | {kind: 'rejected'; epoch: string; reason: unknown}
+  | {kind: 'unavailable'; epoch: string}
+  | {kind: 'epoch'; epoch: string}
+  | {kind: 'key-conflict'}
+  | {kind: 'scope-refused'}
+  | {kind: 'mismatch'}
+  | {kind: 'retry'};
+
+export interface IntentTransport {
+  send(request: {operation: string; key: string; scope: string; epoch: string | null; input: unknown; signal: AbortSignal}): Promise<TransportAnswer>;
+}
+
+export interface HttpIntentTransportOptions {
+  baseUrl: string;
+  fetch?: typeof fetch;
+  /** Extra headers for every request, such as the host's session headers. */
+  headers?: () => Record<string, string>;
+}
+
+/** Sends each intent as PUT {baseUrl}/{operation}/{key} with the scope and epoch headers. */
+export function httpIntentTransport(options: HttpIntentTransportOptions): IntentTransport;
+
+/** A terminal record that no member has consumed. */
+export interface UnconsumedOutcome {
+  readonly id: string;
+  journal: string;
+  /** The owner as JSON text: `'"t1"'` for the owner `"t1"`. */
+  owner: string;
+  member: string;
+  operation: string;
+  input: unknown;
+  outcome: DurableOutcome<unknown, unknown>;
+  acknowledge(): Promise<void>;
+}
+
+/**
+ * A record that cannot be sent safely. Until it is discarded, its owner admits no new intent.
+ * `version` means the record's operation version is older than the journal's. `unknown-operation`
+ * is only found in records blocked by an earlier release: a record of an unknown operation, or of
+ * a newer version, now stays pending for a tab that knows it, and is not listed here.
+ */
+export interface BlockedRecord {
+  readonly id: string;
+  journal: string;
+  /** The owner as JSON text, or an empty string for a corrupt record. */
+  owner: string;
+  member: string;
+  operation: string;
+  reason: 'key-conflict' | 'epoch' | 'mismatch' | 'version' | 'unknown-operation' | 'corrupt';
+  /** The stored text of the record. */
+  export(): string;
+  discard(): Promise<void>;
+}
+
+/**
+ * Where a journal keeps its records: the text of each scope's journal under
+ * one key. A write or a removal resolves once it is committed, and `subscribe`
+ * hears the keys that other tabs changed.
+ */
+export interface IntentStore {
+  read(key: string): Promise<string | null>;
+  write(key: string, text: string): Promise<void>;
+  remove(key: string): Promise<void>;
+  subscribe(listener: (key: string) => void): () => void;
+  /**
+   * Releases the store's connection; a later call opens it again. Subscriptions stay, so a journal
+   * still running on a shared store keeps hearing other tabs. A journal calls it on `stop` only for
+   * the store it created by default; the host closes a store it passed.
+   */
+  close?(): void;
+}
+
+export interface IndexedDbIntentStoreOptions {
+  /** The database name. Defaults to `elnor-intents`. */
+  name?: string;
+  /** Defaults to `globalThis.indexedDB`. */
+  indexedDB?: IDBFactory;
+  /** Defaults to `new BroadcastChannel('elnor-intents')`. */
+  channel?: () => BroadcastChannel;
+}
+
+/** The IndexedDB intent store, coherent across tabs. Throws a TypeError when IndexedDB is not available. */
+export function indexedDbIntentStore(options?: IndexedDbIntentStoreOptions): IntentStore & {close(): void};
+
+export interface IntentJournalOptions {
+  /** Defaults to `indexedDbIntentStore()`. */
+  store?: IntentStore;
+  /** The account the intents belong to. A journal only reads and sends intents of its scope. */
+  scope: string;
+  /** Defaults to `navigator.locks`. */
+  locks?: LockManager;
+  /** Defaults to `crypto.randomUUID()`. */
+  createKey?: () => string;
+  /**
+   * Backoff after a failure, doubling from `firstMs` up to `maxMs`. Each defaults to 1000 and 60000;
+   * both must be positive finite numbers with `firstMs` at most `maxMs`, or the journal throws a TypeError.
+   */
+  retry?: {firstMs?: number; maxMs?: number};
+}
+
+export interface IntentJournal {
+  operation<I, R, E>(name: string, config: {version: number; transport: IntentTransport}): DurableOperation<I, R, E>;
+  /** Reconciles every stored intent of the scope, again when the browser reports a connection. */
+  start(): void;
+  /**
+   * Aborts the requests in flight and sends or admits nothing more until `start`, also on a journal
+   * that never started. Closes the store the journal created by default.
+   */
+  stop(): void;
+  /**
+   * Resolves to the terminal records that no member consumed: `await journal.outcomes()`. They include
+   * the outcomes that no group of this release consumes: those of a member a group does not declare, and
+   * those of an operation version other than the one this journal registered. Rejects when the store
+   * cannot be read.
+   */
+  outcomes(): Promise<ReadonlyArray<UnconsumedOutcome>>;
+  /** Resolves to the records that cannot be sent: `await journal.blocked()`. Rejects when the store cannot be read. */
+  blocked(): Promise<ReadonlyArray<BlockedRecord>>;
+  /**
+   * Removes every record of the scope, pending, terminal and blocked, under the scope's lock, and
+   * tells the other tabs. Use it when the scope's data must not stay on the device, for example on
+   * logout. Pending intents that were not sent are lost, and one in flight may be applied without
+   * its outcome reaching anyone.
+   */
+  forget(): Promise<void>;
+  /** Called when the provider refuses the scope for the current session; the journal sends nothing until `start`. */
+  onPaused(listener: (reason: 'scope-refused') => void): () => void;
+}
+
+/** Throws a TypeError when the Web Locks API is not available, or when no store is given and IndexedDB is not available. */
+export function createIntentJournal(options: IntentJournalOptions): IntentJournal;

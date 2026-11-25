@@ -7,6 +7,9 @@ import {sourceKey,sourcePath,sourceImport} from './source-identity.mjs';
 import {createDocumentStore} from './document-store.mjs';
 import {formatSurface} from './formatter.mjs';
 import {guardCallConflicts} from './action-guards.mjs';
+import {actionGroupPolicies, managedActionMessage, ownerIdentityWarnings, staleWriteWarnings} from './action-groups.mjs';
+import {unownedWorkWarnings} from './unowned-work.mjs';
+import {durableTypeErrors} from './durable-checks.mjs';
 import {createTypeScriptOptions,describeTypeScriptConfiguration} from './typescript-configuration.mjs';
 
 const ts = getTs();
@@ -128,14 +131,29 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
         errors.push({...error,file:doc.file,...position(doc.source,error.start)});
       }
     }
+    for(const error of durableTypeErrors(ts,ls.getProgram(),virtualName(doc),doc.projection)){
+      const span=error.generated===undefined?{start:error.start,length:error.length}:doc.projection.ir.nameSpan;
+      errors.push({code:error.code,message:error.message,file:doc.file,...span,...position(doc.source,span.start),...(error.generated===undefined?{}:{approximate:true})});
+    }
+    for(const warning of ownerIdentityWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection.ownerChecks)){
+      errors.push({...warning,file:doc.file,...position(doc.source,warning.start)});
+    }
+    for(const warning of [...staleWriteWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection),...unownedWorkWarnings(ts,ls.getProgram(),virtualName(doc),doc.projection)]){
+      const original=doc.projection.map.toOriginal(warning.start,warning.length);
+      if(original)errors.push({...warning,...original,file:doc.file,...position(doc.source,original.start)});
+    }
     for (const d of [...ls.getSyntacticDiagnostics(virtualName(doc)), ...ls.getSemanticDiagnostics(virtualName(doc))]) {
       if(doc.projection.recoveryTails?.some(tail=>d.start>=tail.start&&d.start<tail.end))continue;
+      if(doc.projection.generatedTypeRanges?.some(range=>d.start>=range.start&&d.start<range.end))continue;
       const exact = originalLocation(virtualName(doc), {start: d.start ?? 0, length: d.length ?? 0});
       // Never report a virtual offset as a source offset. Unmapped errors are
-      // explicitly anchored to the component, with their provenance retained.
-      const mapped = exact ?? {file: doc.file, ...doc.projection.ir.nameSpan};
-      errors.push({...mapped, code: `TS${d.code}`, message: surfaceDiagnosticMessage(ts, d, () => ls.getProgram()?.getTypeChecker()),
-        ...position(doc.source, mapped.start), approximate: !exact});
+      // explicitly anchored to the managed action whose generated text they
+      // fall in, or else to the component, with their provenance retained.
+      const action = exact ? undefined : doc.projection.managedRanges.find(range => d.start >= range.start && d.start < range.end);
+      const mapped = exact ?? {file: doc.file, ...(action?.nameSpan ?? doc.projection.ir.nameSpan)};
+      // A message names a managed action, not its generated implementation.
+      const message = managedActionMessage(surfaceDiagnosticMessage(ts, d, () => ls.getProgram()?.getTypeChecker()), doc.projection.managed);
+      errors.push({...mapped, code: `TS${d.code}`, message, ...position(doc.source, mapped.start), approximate: !exact});
     }
     return errors;
   }
@@ -150,10 +168,21 @@ export function createSurfaceLanguageService({root = process.cwd()} = {}) {
     }
     return [...found.values()];
   }
+  function containsCursor(span, offset) {
+    return span.start <= offset && offset <= span.start + span.length;
+  }
   function completions(file, offset) {
     const doc = requireSurface(file);
     const dom=domPropertyCompletions(doc.source,offset,doc.file,doc.projection.ir);if(dom!==null)return dom;
     if (!doc.projection.ir) return [];
+    const {actionGroups,actions}=doc.projection.ir;
+    const policy=actionGroups.find(group=>containsCursor(group.policySpan,offset));
+    const member=actions.find(action=>action.groupSpan&&containsCursor(action.groupSpan,offset));
+    if(policy||member){
+      const span=policy?.policySpan??member.groupSpan;
+      const names=policy?actionGroupPolicies:[...new Set(actionGroups.map(group=>group.name))];
+      return names.map(name=>({name,kind:policy?'keyword':'const',replacementSpan:{file:doc.file,...span}}));
+    }
     const context = doc.projection.propContexts.find(({node}) => {
       const span = node.attributesSpan;
       return offset >= span.start && offset <= span.start + span.length

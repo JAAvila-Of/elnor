@@ -40,6 +40,7 @@ evidence and do not imply Unicode Surface identifiers.
 | `calc doubled = count * 2;` | Derived binding tracked through the runtime's cells/effects; direct reassignment is rejected | [scope tests](../../tests/scope-parity.test.mjs), [initialization tests](../../tests/initialization-parity.test.mjs) |
 | `action increment() { count++; }` | TypeScript parameters/body, lexical locals and tested shadowing preserved | [scope tests](../../tests/scope-parity.test.mjs), [name hygiene](../../tests/name-hygiene.test.mjs) |
 | `action async save() { await persist(); }` | Async action execution and state updates in tested flows | [composition tests](../../tests/spike.test.mjs) |
+| `action group editing(id) single-flight` with `action async save() in editing { ... }` | Experimental. Concurrency policy per owner: `single-flight`, `latest`, `keep-latest`, `queue`, with `timeout` and `debounce`; `durable "name"` stores each call as an intent that survives a reload and resumes the body after its first `await`. Headless Edge acceptance of `durable` passed all 26 checks in 5 consecutive runs at commit `c5ae4c2` | [policies](../mvp/ASYNC-POLICY.md#action-groups), [groups](../../tests/action-groups.test.mjs), [durable intents](../mvp/ASYNC-POLICY.md#durable-intents), [durable groups](../../tests/durable-groups.test.mjs), [Edge acceptance](../mvp/DURABLE-INTENTS-DESIGN.md#results) |
 | `event changed(value: number)` / `event closed()` | One named payload parameter or none; `emit.changed(value)` calls an optional supplied handler | [composition tests](../../tests/spike.test.mjs), [graph validation](../../tests/semantic-parity.test.mjs) |
 
 The selected prop forms use simple names, with types or optional markers as
@@ -73,7 +74,7 @@ current parser's UI forms, not a claim of arbitrary HTML or JSX:
 | Boolean checkbox | `checkbox "Completed" <-> completed`; direct mutable boolean state, native checked/change, optional class/disabled; no nested/controlled binding. See [evidence](../mvp/CHECKBOX-BINDING.md) |
 | Native select | `select "Priority" <-> priority {` with literal `option "Normal" => "normal"` lines; direct string state, option-union writes, optional class/disabled. See [evidence and limits](../mvp/SELECT-BINDING.md) |
 | Native form | `form => create() { ... }` with `submit "Create"`; one action on native submit, synchronous navigation prevention, optional class and submit disabled; reusable submit components/slots and inert orphan buttons; [limits and evidence](../mvp/SUBMIT-COMPOSITION.md) |
-| Component cleanup | One `on dispose() => release()` in the component body; synchronous void expression, instance retirement, conditional/keyed/slot placement and UI rollback. Regional fallback is explicit. [Contract and evidence](../mvp/COMPONENT-DISPOSAL.md) |
+| Component cleanup | One `on dispose() => release()` in the component body; synchronous void expression, instance retirement, conditional/keyed/slot placement and UI rollback. Regional fallback is explicit. The editor warns with `ELN-UNOWNED-WORK` when an interval, listener, subscription, connection or observer is never released. [Contract and evidence](../mvp/COMPONENT-DISPOSAL.md) |
 | Managed reset | `on reset() => clear()` directly inside a form and `reset "Clear draft"`; explicit typed state action, native defaults prevented, reusable components/slots, class/disabled and inert orphan buttons. [Contract and evidence](../mvp/FORM-RESET.md) |
 | Conditional | `if expression { ... }`; an `else` form is outside this baseline |
 | Repetition | `each item in items by item.id { ... }`; array input, explicit stable key, tested reuse/reordering |
@@ -104,6 +105,22 @@ strings, including imported named values. The input itself receives the class;
 the generated label does not. Keep `.name` or the expression on a container,
 not both. Other DOM attributes and style objects remain outside this contract.
 See [usage, tests and native/browser evidence](../mvp/TYPED-DOM-CLASSES.md).
+
+## Native control groups
+
+Use a `fieldset` block to group related controls. An optional `legend` takes
+a text expression and names the group. Place it first and directly inside its
+fieldset. Both elements accept the usual `class=(...)` prefix.
+On `fieldset`, `disabled=(booleanExpression)` uses the browser's native
+group behavior. Use it when related controls share an enabled state.
+
+```elnor
+fieldset disabled=(busy) {
+  legend "Contact preferences"
+  input "Email address" <-> email
+  checkbox "Send updates" <-> updates
+}
+```
 
 ## Experimental multiline text binding
 

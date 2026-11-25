@@ -8,6 +8,10 @@ implementation. Syntax does not need to improve execution speed to justify its
 existence. DX comes first, followed by security and performance; compiler and
 runtime optimization are separate questions.
 
+Elnor's [vision](docs/VISION.md) is to make asynchronous work declarative:
+every operation has an owner, a policy, a lifecycle and a destination, and the
+compiler checks the guarantees that follow from them.
+
 The [capability backlog](docs/mvp/ECOSYSTEM-ROADMAP.md#owner-requested-capability-backlog-dx-throughout)
 keeps future state, schema, development-tool and server capabilities mapped,
 including Server Components and Server Actions. Exceptional DX is required
@@ -28,6 +32,9 @@ That fixed Svelte runtime majority target now has two same-source cohorts and
 a [validated public core integration](docs/mvp/CORE-REGION-INTEGRATION.md).
 Persistent phase exceptions remain explicit; this does not close the broader
 React, representative-app, startup, memory or production-readiness targets.
+The general renderer is now the default; it passed the same matrix in two
+cohorts before the switch, as recorded in
+[General renderer as the default](docs/mvp/GENERAL-RENDERER-DEFAULT.md).
 
 The current phase uses that core as a regression baseline and prioritizes
 Surface and application DX. The [Task desk pilot](docs/mvp/TASK-DESK-PILOT.md)

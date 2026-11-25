@@ -61,3 +61,147 @@ keeps its own indexed region plan, expression binder and ownership model.
 The [state initializer follow-up](REGION-BACKEND-STATE-INITIALIZERS.md) also
 admits external initial state values. Open collections, default parameters and
 component event boundaries remain separate admission work.
+
+## General synchronous action bodies
+
+A later change admits general synchronous action bodies in sequential regions.
+An action that the statement-level proof cannot lower no longer sends the
+component to the general renderer when its body stays within this subset:
+
+- local declarations, `if`, loops, `try`, `catch` and `finally`;
+- calls to props;
+- nested functions and closures, and local names that shadow state.
+
+The compiler keeps the body as written and runs it against an instance handle
+from the region runtime's `regionInstance`. There is one handle per component
+instance: the part of the instance's group that was open when its first action
+started. States and calcs become accessors of the handle, other actions become
+stable references of the handle, and root props come from it. Reads, writes,
+compound assignments, calls and closures go through the region while the
+instance is mounted.
+
+A closure keeps its handle. When the instance's part closes, for example on
+unmount or when an `if` branch closes, the handle freezes every slot of the
+group before the region clears or reuses it. A closure that outlives its
+instance then keeps reading and writing its own last values, and calling its
+own actions, as with general-renderer cells. It never reaches a later instance
+that reuses the slots.
+
+A component in which any action calls another lowers all of its actions this
+way, so that every call shares the caller's handle.
+
+Async actions take this path too. Their body keeps its handle across awaits,
+so a result that arrives after the instance's branch closed, reopened or the
+component unmounted updates that instance's own frozen values, as with
+general-renderer cells, and never the new instance.
+`tests/region-async-actions.test.mjs` compares completion, failure, a result
+after the branch reopens and a result after unmount with the general renderer.
+Action groups still use the general renderer.
+
+These bodies still keep the general fallback: `this`, `arguments`, `super`,
+`new.target`, writes to closed collections, and prop reads in an inlined child
+instance.
+
+`tests/region-general-actions.test.mjs` checks the selection and runs eight
+action shapes against the same expected views as the general renderer.
+
+`tests/region-general-actions.test.mjs` also compares the region with the
+general renderer for closures used after unmount and after an `if` branch
+closes and reopens. `tests/region-action-calls.test.mjs` does the same for
+calls with arguments, defaults and return values, recursion, an action passed
+as a value, its stable identity, and closures that call other actions.
+
+The 19 components under `examples/` select the same backend as before. Each
+of them is rejected first by another rule, such as `on dispose`, a root with
+more than one container, opaque state, slot or event boundaries, or calls
+between actions.
+
+## Disposal hooks
+
+`on dispose` no longer sends a component to the general renderer when the
+component uses a sequential region. The hook expression is lowered like a
+general action body and registered as a cleanup of its instance's part at the
+point where the general renderer registers it: after state, calcs and actions,
+before the UI. Cleanups run in reverse registration order, so a child's hook
+runs before its parent's and the UI cleanups of an instance run before its own
+hook. The hook runs with the instance handle, reads and writes the live state,
+and the handle freezes afterwards. A throwing hook does not skip the other
+cleanups, and the failures are reported together as in the general renderer.
+
+`tests/region-disposal-hooks.test.mjs` compares the hook order, the state read
+and written by hooks, hooks that call actions and a throwing hook at unmount
+with the general renderer. The comparison builds the same components with
+`buildSurfaceProject(entry, {regionBackend: false})`, which compiles every
+component with the general renderer.
+
+## Props of child components
+
+A child component in a sequential region is mounted as its own region and
+reads its props through getters on the parent. A prop expression that the
+statement-level proof cannot lower is now evaluated as an opaque expression,
+with the same restrictions as other opaque expressions.
+
+A child with general actions, async actions or `on dispose` can read a prop
+after its parent instance closes, for example from a timer or a late result.
+Its props are therefore evaluated through the parent's instance handle,
+captured when the child mounts. While the parent is alive, reads go through
+the region and are tracked. After the parent's part closes, they read the
+handle's frozen values, as general-renderer getters read retained cells. This
+path also accepts callbacks and parent actions passed as props; assignments
+outside a callback keep fallback. A prop of such a child that reads a row item
+of an `each` keeps the general fallback, because the handle covers the
+component instance and not the row.
+
+`tests/region-child-props.test.mjs` compares object, function and computed
+props, a child action that reads props after a parent update, closures that
+read props after unmount, and callbacks with the general renderer.
+
+## Events emitted by general actions
+
+A general or async action may call `emit` at any point, including after an
+`await` or before other statements. An action whose `emit` is not its last
+statement takes the general path instead of falling back. The emitter is read
+from the instance handle, captured when the handle is created.
+
+The general renderer calls the parent handler for every emit, also after the
+child's branch closed or the page unmounted. The region parent therefore
+builds the handlers of a child with general, async or `on dispose` code from
+its own instance handle, captured when the child mounts, without the liveness
+guard used for children whose emits are synchronous. A handler may call a
+parent action or assign parent state. A handler that reads a row item of an
+`each` keeps fallback for such a child.
+
+`tests/region-action-emits.test.mjs` compares emits while mounted, after an
+`await`, before other statements, after the child's branch closes and after
+unmount with the general renderer.
+
+## Functions in expressions
+
+A UI expression, calc, state initializer, event argument or child prop may
+create arrow functions and function expressions, use `new`, and assign its own
+variables inside those functions. It may not assign component state, props or
+row items, and it keeps fallback for classes, `this`, `delete`, `await` and
+`yield`. It may also call or pass the component's actions, and call a function
+stored in state.
+
+A function created by an expression can outlive it, for example when a library
+keeps a callback. Such an expression reads each slot through the instance
+handle of the part that owns it: the row for row items and the component
+instance for state and calcs. Reads stay tracked while the part is open. A
+closure that runs after its row was removed or the component unmounted reads
+the frozen values, as general-renderer cells do. Actions referenced from these
+expressions are the handle's stable references, so every action of the
+component takes the general path. Expressions without functions keep their
+direct lowering.
+
+The region code is appended to the general module, which already declares the
+TypeScript downlevel helpers its bodies need, such as `__addDisposableResource`
+for `using`. A lowered body drops those helper declarations only when the
+module declares them.
+
+`tests/region-expression-closures.test.mjs` compares `filter`, `map`, `sort`,
+`reduce` and `new` in text, calcs and initializers, closures over the outer row
+of nested lists, a function prop, an escaping closure read after its row is
+removed and after unmount, actions used from calcs, initializers and
+expressions, and bodies with `using` and `await using` with the general
+renderer.
